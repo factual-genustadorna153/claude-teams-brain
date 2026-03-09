@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="claude-teams-brain" width="120" />
+  <img src="claude-teams-brain/assets/logo.png" alt="claude-teams-brain" width="120" />
 </p>
 
 # claude-teams-brain
