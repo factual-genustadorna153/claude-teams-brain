@@ -8,7 +8,7 @@ Usage:
   brain_engine.py init <project_dir>
   brain_engine.py init-run <project_dir> [<session_id>]
   brain_engine.py index-task <json>
-  brain_engine.py query-role <role> [<project_dir>]
+  brain_engine.py query-role <role> [<project_dir>] [<task_description>]
   brain_engine.py status [<project_dir>]
   brain_engine.py summarize-run <run_id> [<project_dir>]
   brain_engine.py list-runs [<project_dir>]
@@ -394,6 +394,54 @@ def kb_search_query(conn, query, limit=5):
     return results[:limit]
 
 
+def score_relevance(text: str, keywords: list) -> int:
+    """Score a text by how many task keywords it contains."""
+    if not keywords or not text:
+        return 0
+    t = text.lower()
+    return sum(1 for kw in keywords if kw in t)
+
+
+def summarize_large_content(content: str, max_bytes: int = 8000) -> str:
+    """Extract the most important lines from large command output to keep KB lean."""
+    if len(content.encode('utf-8')) <= max_bytes:
+        return content
+
+    lines = content.split('\n')
+    important = []
+    seen = set()
+
+    IMPORTANT = re.compile(
+        r'error|fail|warn|exception|traceback|pass|success|'
+        r'✓|✗|×|\d+\s+(passing|failing|pending)|'
+        r'^\s*at\s|^\s*File\s"',
+        re.IGNORECASE
+    )
+
+    # First 20 lines (headers/config)
+    for line in lines[:20]:
+        if line.strip() and line not in seen:
+            seen.add(line)
+            important.append(line)
+
+    # Important lines from the middle
+    for line in lines[20:max(20, len(lines) - 30)]:
+        if line.strip() and IMPORTANT.search(line) and line not in seen:
+            seen.add(line)
+            important.append(line)
+
+    # Last 30 lines (summaries/totals)
+    for line in lines[-30:]:
+        if line.strip() and line not in seen:
+            seen.add(line)
+            important.append(line)
+
+    result = '\n'.join(important)
+    if len(result.encode('utf-8')) > max_bytes:
+        result = result[:max_bytes] + '\n...[summarized]'
+    return result
+
+
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 def cmd_init(project_dir: str):
@@ -478,51 +526,87 @@ def cmd_index_task(payload_str: str):
     print(json.dumps({"status": "ok", "task_id": task_id}))
 
 
-def cmd_query_role(role: str, project_dir: str):
+def cmd_query_role(role: str, project_dir: str, task_description: str = ""):
     """
-    Return memory relevant to a role.
+    Return memory relevant to a role, ranked by relevance to the current task.
     Used by SubagentStart to inject context into a new teammate.
     Output is a formatted string ready to inject as additionalContext.
     """
     conn = get_conn(project_dir)
     role_lower = role.lower()
 
-    # Recent tasks for this role (last 10)
+    # Build keyword set from task description for relevance scoring
+    task_keywords = [w.lower() for w in re.split(r'\W+', task_description) if len(w) > 3] if task_description else []
+
+    # Recent tasks for this role (fetch more, then rank by relevance)
     role_tasks = conn.execute(
         """SELECT t.task_subject, t.output_summary, t.files_touched, t.decisions,
                   t.completed_at, t.run_id
            FROM tasks t
            WHERE lower(t.agent_role) LIKE ? OR lower(t.agent_name) LIKE ?
-           ORDER BY t.completed_at DESC LIMIT 10""",
+           ORDER BY t.completed_at DESC LIMIT 20""",
         (f"%{role_lower}%", f"%{role_lower}%")
     ).fetchall()
 
-    # Also try FTS fallback search for the role
+    if task_keywords:
+        role_tasks = sorted(
+            role_tasks,
+            key=lambda t: score_relevance(
+                (t["task_subject"] or "") + " " + (t["output_summary"] or ""),
+                task_keywords
+            ),
+            reverse=True
+        )
+
     fts_results = search_with_fallback(conn, role, limit=5)
 
-    # Manual memories (user-defined rules — always injected, any role)
+    # Manual memories (user-defined rules — always injected)
     manual_memories = conn.execute(
-        """SELECT decision, created_at FROM decisions
+        """SELECT decision FROM decisions
            WHERE agent_name = 'user' ORDER BY created_at DESC"""
     ).fetchall()
 
-    # Recent team decisions (last 15, any role — shared knowledge)
-    all_decisions = conn.execute(
+    # Team decisions — deduplicated and relevance-ranked
+    raw_decisions = conn.execute(
         """SELECT d.decision, d.rationale, d.agent_name, d.created_at
            FROM decisions d WHERE d.agent_name != 'user'
-           ORDER BY d.created_at DESC LIMIT 15"""
+           ORDER BY d.created_at DESC LIMIT 30"""
     ).fetchall()
 
-    # Files this role has touched
-    role_files = conn.execute(
+    seen_dec = set()
+    all_decisions = []
+    for d in raw_decisions:
+        key = d["decision"].strip().lower()[:100]
+        if key not in seen_dec:
+            seen_dec.add(key)
+            all_decisions.append(d)
+
+    if task_keywords:
+        all_decisions = sorted(
+            all_decisions,
+            key=lambda d: score_relevance(
+                (d["decision"] or "") + " " + (d["rationale"] or ""),
+                task_keywords
+            ),
+            reverse=True
+        )
+
+    # Files this role has touched — deduplicated
+    raw_files = conn.execute(
         """SELECT DISTINCT fi.file_path, fi.summary
            FROM file_index fi
            WHERE lower(fi.agent_name) LIKE ?
-           ORDER BY fi.touched_at DESC LIMIT 20""",
+           ORDER BY fi.touched_at DESC LIMIT 30""",
         (f"%{role_lower}%",)
     ).fetchall()
 
-    # Recent run summary
+    seen_files = set()
+    role_files = []
+    for f in raw_files:
+        if f["file_path"] not in seen_files:
+            seen_files.add(f["file_path"])
+            role_files.append(f)
+
     last_run = conn.execute(
         "SELECT summary, started_at FROM runs ORDER BY started_at DESC LIMIT 1"
     ).fetchone()
@@ -535,7 +619,7 @@ def cmd_query_role(role: str, project_dir: str):
 
     lines = [
         f"## 🧠 claude-brain: Memory for role [{role}]",
-        f"_Auto-injected context from past Agent Team sessions_",
+        "_Auto-injected context from past Agent Team sessions_",
         "",
     ]
 
@@ -585,8 +669,6 @@ def cmd_query_role(role: str, project_dir: str):
     lines.append("_Use this context to avoid duplicating work and maintain consistency._")
 
     context = "\n".join(lines)
-
-    # Apply context budget cap
     if len(context) > CONTEXT_BUDGET:
         context = context[:CONTEXT_BUDGET] + "\n\n_[Truncated — context budget of {} chars reached]_".format(CONTEXT_BUDGET)
 
@@ -704,6 +786,9 @@ def cmd_kb_index(args):
     project_dir, source, content_file = args[0], args[1], args[2]
     with open(content_file, 'r', encoding='utf-8', errors='replace') as f:
         content = f.read()
+
+    # Summarize large content before indexing to keep the KB lean
+    content = summarize_large_content(content)
 
     chunks = chunk_content(content, source)
     conn = get_conn(project_dir)
@@ -907,7 +992,8 @@ def main():
         elif cmd == "query-role":
             role = args[1] if len(args) > 1 else "general"
             project_dir = args[2] if len(args) > 2 else cwd
-            cmd_query_role(role, project_dir)
+            task_desc = args[3] if len(args) > 3 else ""
+            cmd_query_role(role, project_dir, task_desc)
 
         elif cmd == "status":
             project_dir = args[1] if len(args) > 1 else cwd

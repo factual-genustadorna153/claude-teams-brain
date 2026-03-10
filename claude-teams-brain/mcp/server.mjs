@@ -18,7 +18,24 @@ const sessionStats = {
   calls: {},
   bytesReturned: 0,
   bytesIndexed: 0,
+  cacheHits: 0,
 };
+
+// In-memory command cache with 60s TTL to avoid re-running identical commands
+const commandCache = new Map();
+const CACHE_TTL_MS = 60_000;
+
+function runCached(command, timeout) {
+  const now = Date.now();
+  const cached = commandCache.get(command);
+  if (cached && (now - cached.ts) < CACHE_TTL_MS) {
+    sessionStats.cacheHits += 1;
+    return { ...cached.result, fromCache: true };
+  }
+  const result = runShell(command, timeout);
+  commandCache.set(command, { result, ts: now });
+  return result;
+}
 
 function track(toolName, bytes) {
   sessionStats.calls[toolName] = (sessionStats.calls[toolName] ?? 0) + 1;
@@ -133,19 +150,23 @@ const TOOLS = [
 
 // --- Tool Handlers ---
 async function handleBatchExecute({ commands, queries, timeout = 60000 }) {
-  const script = commands.map(c => `echo "# ${c.label}"\n${c.command}\necho ""`).join('\n');
-  const result = runShell(script, timeout * commands.length);
+  const parts = [];
+  const cacheInfo = [];
 
-  const output = result.stdout || '(no output)';
+  for (const c of commands) {
+    const result = runCached(c.command, timeout);
+    const out = result.stdout || '(no output)';
+    const tag = result.fromCache ? ' [cached]' : '';
+    parts.push(`# ${c.label}${tag}\n${out}\n`);
+    cacheInfo.push(result.fromCache ? `${c.label}:cached` : `${c.label}:fresh`);
+  }
+
+  const combinedOutput = parts.join('\n');
   const source = `batch:${commands.map(c => c.label).join(',')}`.slice(0, 80);
 
-  // Index the output
-  const indexed = indexContent(output, source);
+  const indexed = indexContent(combinedOutput, source);
+  const inventory = [`## Indexed ${indexed.chunks ?? 0} sections from ${commands.length} commands (${cacheInfo.join(', ')})\n`];
 
-  // Build section inventory
-  const inventory = [`## Indexed ${indexed.chunks ?? 0} sections from ${commands.length} commands\n`];
-
-  // Search all queries
   const allResults = [];
   for (const q of queries) {
     allResults.push(...searchKB(q, 3));
@@ -153,8 +174,6 @@ async function handleBatchExecute({ commands, queries, timeout = 60000 }) {
 
   const resultsText = formatSearchResults(allResults);
   const response = [...inventory, '## Search Results\n', resultsText].join('\n');
-
-  // Cap at 80KB
   const capped = response.slice(0, 80 * 1024);
   track('batch_execute', capped.length);
   return capped;
@@ -208,6 +227,7 @@ function handleStats() {
   const lines = [
     `Session: ${elapsed}s`,
     `Calls: ${JSON.stringify(sessionStats.calls)}`,
+    `Cache hits: ${sessionStats.cacheHits}`,
     `Returned to context: ${(sessionStats.bytesReturned / 1024).toFixed(1)}KB`,
     `Indexed (kept out of context): ${(sessionStats.bytesIndexed / 1024).toFixed(1)}KB`,
     `Context savings ratio: ${ratio}x`,

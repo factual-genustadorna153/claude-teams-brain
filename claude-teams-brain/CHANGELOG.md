@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.3] - 2026-03-10
+
+### Added
+- Smart context pruning: memories ranked by relevance to the current task description
+- Command result caching in batch_execute (60s TTL) — identical commands served from cache
+- Session warm-up: CLAUDE.md, git log, directory tree, and config files indexed at SessionStart
+- Cache hit counter in stats output
+
+### Improved
+- Deduplication of decisions and files before context injection
+- Large command output auto-summarized before indexing (keeps KB lean)
+
 ## [1.0.2] - 2026-03-10
 
 ### Added

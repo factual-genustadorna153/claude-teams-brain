@@ -17,6 +17,48 @@ import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))
 python3 "$ENGINE" init "$PROJECT_DIR" >/dev/null 2>&1 || true
 python3 "$ENGINE" init-run "$PROJECT_DIR" "$SESSION_ID" >/dev/null 2>&1 || true
 
+# --- Warm-up: index project context so teammates find it in KB immediately ---
+_warmup_index() {
+  local content="$1" source="$2"
+  [ -z "$content" ] && return
+  local tmpfile
+  tmpfile=$(mktemp /tmp/ctb-warmup-XXXXXX 2>/dev/null) || return
+  printf '%s' "$content" > "$tmpfile"
+  python3 "$ENGINE" kb-index "$PROJECT_DIR" "$source" "$tmpfile" >/dev/null 2>&1 || true
+  rm -f "$tmpfile"
+}
+
+# 1. Index CLAUDE.md if it exists and is substantial
+CLAUDE_MD_PATH="${PROJECT_DIR}/CLAUDE.md"
+if [ -f "$CLAUDE_MD_PATH" ] && [ "$(wc -c < "$CLAUDE_MD_PATH" 2>/dev/null || echo 0)" -gt 200 ]; then
+  python3 "$ENGINE" kb-index "$PROJECT_DIR" "CLAUDE.md" "$CLAUDE_MD_PATH" >/dev/null 2>&1 || true
+fi
+
+# 2. Git history — only if this is a git repo
+if git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  GIT_LOG=$(git -C "$PROJECT_DIR" log --oneline -20 2>/dev/null || true)
+  _warmup_index "$GIT_LOG" "git-log"
+fi
+
+# 3. Directory structure (shallow, excluding noise)
+DIR_TREE=$(find "$PROJECT_DIR" -maxdepth 3 \
+  -not -path "*/.git/*" \
+  -not -path "*/node_modules/*" \
+  -not -path "*/__pycache__/*" \
+  -not -path "*/.claude/*" \
+  -not -path "*/dist/*" \
+  -not -path "*/build/*" \
+  2>/dev/null | sed "s|${PROJECT_DIR}/||g" | head -100 || true)
+_warmup_index "$DIR_TREE" "directory-tree"
+
+# 4. Key config files (if small enough to be useful)
+for _cfg in package.json requirements.txt pyproject.toml Cargo.toml go.mod; do
+  _cfg_path="${PROJECT_DIR}/${_cfg}"
+  if [ -f "$_cfg_path" ] && [ "$(wc -c < "$_cfg_path" 2>/dev/null || echo 99999)" -lt 10000 ]; then
+    python3 "$ENGINE" kb-index "$PROJECT_DIR" "$_cfg" "$_cfg_path" >/dev/null 2>&1 || true
+  fi
+done
+
 # Build status message for additionalContext
 STATS=$(python3 "$ENGINE" status "$PROJECT_DIR" 2>/dev/null || echo '{}')
 TASKS=$(echo "$STATS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tasks',0))" 2>/dev/null || echo "0")

@@ -23,8 +23,17 @@ print((d.get('agent_type', '') or 'general').lower().strip())
 
 [ -z "$AGENT_TYPE" ] && AGENT_TYPE="general"
 
-# Query brain for role-relevant memory
-CONTEXT=$(python3 "$ENGINE" query-role "$AGENT_TYPE" "$PROJECT_DIR" 2>/dev/null \
+# Extract task description for relevance-ranked memory injection
+TASK_DESC=$(echo "$INPUT" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+# Try common field names for the task prompt
+desc = (d.get('prompt') or d.get('task') or d.get('description') or d.get('message') or '')
+print(str(desc)[:500])
+" 2>/dev/null || echo "")
+
+# Query brain for role-relevant memory, ranked by task relevance
+CONTEXT=$(python3 "$ENGINE" query-role "$AGENT_TYPE" "$PROJECT_DIR" "$TASK_DESC" 2>/dev/null \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('additionalContext',''))" \
   2>/dev/null || echo "")
 
