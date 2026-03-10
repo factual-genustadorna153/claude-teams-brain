@@ -2,69 +2,96 @@
 # claude-teams-brain: update script
 #
 # Pulls the latest version from GitHub and syncs it into the plugin cache.
-# Called by the /brain-update skill.
+# Called by the /brain-update command.
 
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MARKETPLACE_DIR="$(cd "${PLUGIN_ROOT}/../../../.." && pwd)/marketplaces/claude-teams-brain"
+PLUGINS_DIR="$(cd "${PLUGIN_ROOT}/../../../.." && pwd)"
+MARKETPLACE_DIR="${PLUGINS_DIR}/marketplaces/claude-teams-brain"
+REPO_URL="https://github.com/Gr122lyBr/claude-teams-brain.git"
 
 echo "==> Plugin root:     $PLUGIN_ROOT"
 echo "==> Marketplace dir: $MARKETPLACE_DIR"
 
-# --- 1. Pull latest from GitHub ---
+# --- 1. Ensure marketplace clone exists (auto-clone if missing) ---
 if [ ! -d "$MARKETPLACE_DIR/.git" ]; then
-  echo "ERROR: Marketplace clone not found at $MARKETPLACE_DIR"
-  echo "       Re-add the marketplace: /plugin marketplace add https://github.com/Gr122lyBr/claude-teams-brain"
+  echo ""
+  echo "==> Marketplace clone not found — cloning fresh..."
+  mkdir -p "$(dirname "$MARKETPLACE_DIR")"
+  git clone "$REPO_URL" "$MARKETPLACE_DIR"
+  echo "    Cloned successfully."
+else
+  echo ""
+  echo "==> Pulling latest from GitHub..."
+  cd "$MARKETPLACE_DIR"
+  git fetch origin
+  BEFORE=$(git rev-parse HEAD)
+  git pull --ff-only origin "$(git symbolic-ref --short HEAD)"
+  AFTER=$(git rev-parse HEAD)
+
+  if [ "$BEFORE" = "$AFTER" ]; then
+    echo "    Already up to date ($(git rev-parse --short HEAD))"
+  else
+    echo "    Updated: $(git rev-parse --short "$BEFORE")..$(git rev-parse --short "$AFTER")"
+    CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" | head -20 || echo "unknown")
+    echo "    Changed files:"
+    echo "$CHANGED" | sed 's/^/      /'
+  fi
+fi
+
+# --- 2. Read new version from source ---
+PLUGIN_SRC="${MARKETPLACE_DIR}/claude-teams-brain"
+NEW_VERSION=$(node -p "require('${PLUGIN_SRC}/package.json').version" 2>/dev/null || echo "")
+
+if [ -z "$NEW_VERSION" ]; then
+  echo "ERROR: Could not read version from ${PLUGIN_SRC}/package.json"
   exit 1
 fi
-
 echo ""
-echo "==> Pulling latest from GitHub..."
-cd "$MARKETPLACE_DIR"
-git fetch origin
-BEFORE=$(git rev-parse HEAD)
-git pull --ff-only origin "$(git symbolic-ref --short HEAD)"
-AFTER=$(git rev-parse HEAD)
+echo "==> New version: $NEW_VERSION"
 
-if [ "$BEFORE" = "$AFTER" ]; then
-  echo "    Already up to date ($(git rev-parse --short HEAD))"
-  CHANGED_FILES="none"
+# --- 3. Sync to cache, creating new versioned dir if version changed ---
+CACHE_BASE="${PLUGINS_DIR}/cache/claude-teams-brain/claude-teams-brain"
+NEW_CACHE_DIR="${CACHE_BASE}/${NEW_VERSION}"
+
+mkdir -p "$NEW_CACHE_DIR"
+echo "==> Syncing to cache: $NEW_CACHE_DIR"
+rsync -a --delete --exclude='.git' "${PLUGIN_SRC}/" "${NEW_CACHE_DIR}/"
+echo "    Sync complete."
+
+# --- 4. Update installed_plugins.json with new version and path ---
+INSTALLED_JSON="${PLUGINS_DIR}/installed_plugins.json"
+
+if [ -f "$INSTALLED_JSON" ]; then
+  echo "==> Updating installed_plugins.json..."
+  python3 - <<PYEOF
+import json, sys, os
+
+path = "${INSTALLED_JSON}"
+new_version = "${NEW_VERSION}"
+new_cache_dir = "${NEW_CACHE_DIR}"
+
+with open(path, 'r') as f:
+    data = json.load(f)
+
+key = "claude-teams-brain@claude-teams-brain"
+if key in data.get("plugins", {}):
+    entries = data["plugins"][key]
+    for entry in entries:
+        entry["version"] = new_version
+        entry["installPath"] = new_cache_dir
+        entry["lastUpdated"] = __import__('datetime').datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    data["plugins"][key] = entries
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+    print(f"    Updated to v{new_version} at {new_cache_dir}")
+else:
+    print(f"    WARN: key '{key}' not found in installed_plugins.json — skipping")
+PYEOF
 else
-  echo "    Updated: $(git rev-parse --short "$BEFORE")..$(git rev-parse --short "$AFTER")"
-  CHANGED_FILES=$(git diff --name-only "$BEFORE" "$AFTER" | head -20 || echo "unknown")
-  echo "    Changed files:"
-  echo "$CHANGED_FILES" | sed 's/^/      /'
+  echo "WARN: installed_plugins.json not found at $INSTALLED_JSON — skipping."
 fi
 
-# --- 2. Locate the versioned plugin source ---
-PLUGIN_SRC="${MARKETPLACE_DIR}/claude-teams-brain"
-VERSION=$(node -p "require('${PLUGIN_SRC}/package.json').version" 2>/dev/null || echo "unknown")
 echo ""
-echo "==> Version: $VERSION"
-
-# --- 3. Sync to plugin cache ---
-CACHE_DIR="${PLUGIN_ROOT}/../../cache/claude-teams-brain/claude-teams-brain"
-
-if [ -d "$CACHE_DIR" ]; then
-  # Find the installed version directory (may differ from package.json if manually set)
-  CACHE_VERSION_DIR=$(ls -d "${CACHE_DIR}/"*/ 2>/dev/null | head -1)
-  if [ -n "$CACHE_VERSION_DIR" ]; then
-    echo ""
-    echo "==> Syncing to cache: $CACHE_VERSION_DIR"
-    rsync -a --delete \
-      --exclude='.git' \
-      "${PLUGIN_SRC}/" "${CACHE_VERSION_DIR}"
-    echo "    Sync complete."
-  else
-    echo "WARN: No versioned cache directory found under $CACHE_DIR — skipping sync."
-    echo "      Reinstall the plugin to create the cache entry."
-  fi
-else
-  echo "WARN: Cache directory not found — skipping sync."
-  echo "      Install the plugin first: /plugin install claude-teams-brain"
-fi
-
-echo ""
-echo "==> Done."
-echo "    Restart Claude Code to apply any hook or settings changes."
+echo "==> Done. Restart Claude Code to apply the update."
