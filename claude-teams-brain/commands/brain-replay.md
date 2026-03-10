@@ -1,0 +1,1 @@
+Replay a past Agent Team session as a chronological narrative — who did what, what decisions were made, and what files were touched. Run `/brain-replay` to list recent sessions, or `/brain-replay <run-id>` to replay a specific one. Use `/brain-replay latest` to replay the most recent session. Partial run IDs are accepted.

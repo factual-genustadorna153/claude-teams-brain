@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-03-10
+
+### Added
+- **Cross-platform Python hook runner** (`hook_runner.py`) — replaces all bash scripts; works natively on macOS, Linux, WSL2, and Windows. Requires only Python 3.8+ (already a dependency). No WSL2 required on macOS
+- **Solo mode** — memory now builds even without Agent Teams enabled. Previous session context is injected into the main Claude instance at every `SessionStart`. Solo mode is now a first-class supported workflow
+- **`/brain-seed <profile>`** — instantly seed the brain with pre-built stack conventions. Five built-in profiles: `nextjs-prisma`, `fastapi`, `go-microservices`, `react-native`, `python-general`. Accepts custom JSON profile files
+- **`/brain-replay [run-id]`** — time-travel through any past session as a chronological Markdown narrative: timeline of tasks, decisions, files touched, and session summary. Use `latest` for the most recent run
+- **`/brain-github-export`** — export CONVENTIONS.md and open a GitHub Pull Request via `gh` CLI. Includes reusable GitHub Actions workflow template (`profiles/github-actions-conventions.yml`) for automatic PR creation after every session
+- Auto-seed from existing `.cursorrules`, `AGENTS.md`, and `CONVENTIONS.md` files at session warm-up (zero-config onboarding)
+- New `brain_engine.py` commands: `replay-run`, `seed-profile`, `list-profiles`
+
+### Changed
+- All hooks now use `python3 hook_runner.py <event>` instead of bash — identical behaviour, all platforms
+- Session start message distinguishes solo mode from Agent Teams mode with appropriate messaging
+- Agent Teams env var absence no longer shows a warning — replaced with a friendly "solo mode active" tip
+
 ## [1.0.4] - 2026-03-10
 
 ### Added

@@ -1,0 +1,21 @@
+{
+  "name": "Go Microservices",
+  "description": "Go services with chi router, pgx, slog structured logging, and Docker multi-stage builds",
+  "stack": ["go", "chi", "pgx", "postgresql", "docker", "grpc"],
+  "conventions": [
+    "Package names are short, lowercase, singular — no underscores or camelCase (user, order, auth)",
+    "Wrap errors with fmt.Errorf(\"context: %w\", err) — never discard errors or use panic for flow control",
+    "Pass context.Context as the first argument to every function that does I/O",
+    "Define interfaces at the consumer, not the provider — keep interfaces small (1-3 methods)",
+    "No ORM — use pgx directly with typed query functions; raw SQL in const blocks at top of file",
+    "Table-driven tests with t.Run() — cover happy path, error cases, and edge cases in one test function",
+    "Use slog for structured logging — log.Printf is not allowed in service code",
+    "Graceful shutdown via os.Signal channel — always drain in-flight requests before exiting",
+    "Makefile for common tasks: make build, make test, make lint, make migrate, make docker-build",
+    "Docker multi-stage builds: build stage with golang:alpine, final stage with scratch or distroless",
+    "Environment config via os.Getenv with documented required vars — fail fast at startup if missing",
+    "HTTP handlers return early on error — avoid deeply nested if-else in handlers",
+    "Use sync.WaitGroup and errgroup for concurrent operations — never raw goroutines without tracking",
+    "gRPC services defined in .proto files in api/proto/ — generated code in api/gen/ (never edited manually)"
+  ]
+}

@@ -19,6 +19,9 @@ Usage:
   brain_engine.py kb-index <project_dir> <source> <content_file>
   brain_engine.py kb-search <project_dir> <query> [<limit>]
   brain_engine.py kb-stats <project_dir>
+  brain_engine.py replay-run <run_id_or_latest> [<project_dir>]
+  brain_engine.py seed-profile <profile_name_or_path> [<project_dir>]
+  brain_engine.py list-profiles
 """
 
 import sys
@@ -965,6 +968,229 @@ def cmd_export_conventions(project_dir: str):
     }))
 
 
+# ── New commands: replay-run, seed-profile, list-profiles ─────────────────────
+
+def cmd_replay_run(run_id_arg: str, project_dir: str):
+    """
+    Generate a chronological narrative of what happened in a past run.
+    Accepts a full run ID, a prefix, or the special values 'latest'/'last'.
+    """
+    conn = get_conn(project_dir)
+
+    # Resolve run ID
+    run = None
+    if run_id_arg.lower() in ("latest", "last", ""):
+        run = conn.execute(
+            "SELECT id, started_at, ended_at, summary FROM runs ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+    else:
+        run = conn.execute(
+            "SELECT id, started_at, ended_at, summary FROM runs WHERE id = ? OR id LIKE ? ORDER BY started_at DESC LIMIT 1",
+            (run_id_arg, f"{run_id_arg}%")
+        ).fetchone()
+
+    if not run:
+        conn.close()
+        print(json.dumps({"status": "not_found", "message": f"Run '{run_id_arg}' not found. Use list-runs to see available sessions."}))
+        sys.exit(1)
+
+    run_id = run["id"]
+
+    tasks = conn.execute(
+        "SELECT task_subject, agent_name, agent_role, files_touched, decisions, output_summary, completed_at FROM tasks WHERE run_id = ? ORDER BY completed_at",
+        (run_id,)
+    ).fetchall()
+
+    all_decisions = conn.execute(
+        "SELECT decision, rationale, agent_name, created_at FROM decisions WHERE run_id = ? AND agent_name != 'user' ORDER BY created_at",
+        (run_id,)
+    ).fetchall()
+
+    files = conn.execute(
+        "SELECT file_path, operation, agent_name FROM file_index WHERE run_id = ? ORDER BY touched_at",
+        (run_id,)
+    ).fetchall()
+
+    conn.close()
+
+    started = (run["started_at"] or "")[:19].replace("T", " ")
+    ended = (run["ended_at"] or "in progress")[:19].replace("T", " ")
+
+    lines = [
+        f"# Session Replay: `{run_id[:12]}`",
+        f"**Started:** {started}  **Ended:** {ended}",
+        "",
+    ]
+
+    if tasks:
+        agents = list(dict.fromkeys(t["agent_name"] for t in tasks if t["agent_name"]))
+        mode = "Team: " + ", ".join(agents) if agents else "Solo session"
+        lines += [
+            f"**{mode}**  |  **Tasks completed:** {len(tasks)}",
+            "",
+            "## Timeline",
+            "",
+        ]
+        for i, t in enumerate(tasks, 1):
+            agent = t["agent_name"] or "main"
+            subj = t["task_subject"] or "(untitled)"
+            time_str = (t["completed_at"] or "")[:19].replace("T", " ")
+
+            lines.append(f"### {i}. [{agent}] {subj}")
+            if time_str:
+                lines.append(f"_Completed: {time_str}_")
+
+            task_files = json.loads(t["files_touched"] or "[]")
+            if task_files:
+                suffix = " ..." if len(task_files) > 5 else ""
+                lines.append(f"**Files:** {', '.join(f'`{f}`' for f in task_files[:5])}{suffix}")
+
+            task_decisions = json.loads(t["decisions"] or "[]")
+            if task_decisions:
+                lines.append("**Decisions:**")
+                for d in task_decisions[:3]:
+                    d_str = d if isinstance(d, str) else d.get("decision", str(d))
+                    lines.append(f"  - {d_str[:150]}")
+
+            if t["output_summary"]:
+                lines.append(f"**Summary:** {t['output_summary'][:250]}")
+
+            lines.append("")
+
+    if all_decisions:
+        lines += ["## All Decisions", ""]
+        for d in all_decisions:
+            by = d["agent_name"] or "team"
+            lines.append(f"- **[{by}]** {d['decision'][:200]}")
+            if d["rationale"]:
+                lines.append(f"  _{d['rationale'][:150]}_")
+        lines.append("")
+
+    if files:
+        lines += ["## Files Touched", ""]
+        seen: dict = {}
+        for f in files:
+            fp = f["file_path"]
+            if fp not in seen:
+                seen[fp] = set()
+            if f["agent_name"]:
+                seen[fp].add(f["agent_name"])
+        for fp, agents_set in list(seen.items())[:25]:
+            agents_str = ", ".join(sorted(agents_set)) if agents_set else "unknown"
+            lines.append(f"- `{fp}` — {agents_str}")
+        lines.append("")
+
+    if run["summary"]:
+        lines += ["## Session Summary", "", run["summary"], ""]
+
+    narrative = "\n".join(lines)
+    print(json.dumps({"status": "ok", "run_id": run_id, "narrative": narrative}))
+
+
+def cmd_seed_profile(profile_arg: str, project_dir: str):
+    """
+    Seed the brain with conventions from a named stack profile.
+    Built-in profiles live in the `profiles/` dir next to the plugin root.
+    Accepts a profile name, fuzzy match, or path to a custom JSON file.
+    """
+    if not profile_arg.strip():
+        print(json.dumps({"status": "error", "message": "Profile name required. Use list-profiles to see available profiles."}))
+        sys.exit(1)
+
+    profiles_dir = Path(__file__).parent.parent / "profiles"
+    profile_path = None
+
+    # 1. Exact filename match (with or without .json)
+    for ext in ("", ".json"):
+        candidate = profiles_dir / f"{profile_arg}{ext}"
+        if candidate.exists():
+            profile_path = candidate
+            break
+
+    # 2. Fuzzy match (e.g. "nextjs" matches "nextjs-prisma.json")
+    if not profile_path and profiles_dir.exists():
+        for f in sorted(profiles_dir.glob("*.json")):
+            if profile_arg.lower() in f.stem.lower():
+                profile_path = f
+                break
+
+    # 3. Treat as raw file path
+    if not profile_path:
+        custom = Path(profile_arg)
+        if custom.exists():
+            profile_path = custom
+
+    if not profile_path:
+        available = [f.stem for f in sorted(profiles_dir.glob("*.json"))] if profiles_dir.exists() else []
+        print(json.dumps({
+            "status": "not_found",
+            "message": f"Profile '{profile_arg}' not found.",
+            "available": available,
+        }))
+        sys.exit(1)
+
+    with open(profile_path, encoding="utf-8") as f:
+        profile = json.load(f)
+
+    conventions = profile.get("conventions", [])
+    profile_name = profile.get("name", profile_path.stem)
+
+    conn = get_conn(project_dir)
+    manual_run_id = "manual-memories"
+    existing = conn.execute("SELECT id FROM runs WHERE id = ?", (manual_run_id,)).fetchone()
+    if not existing:
+        conn.execute(
+            "INSERT INTO runs (id, project_dir, session_id, started_at) VALUES (?,?,?,?)",
+            (manual_run_id, project_dir, "manual", ts())
+        )
+
+    added = 0
+    for convention in conventions:
+        if not str(convention).strip():
+            continue
+        conn.execute(
+            """INSERT INTO decisions (id, run_id, agent_name, decision, rationale, tags, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (uid(), manual_run_id, "user", str(convention).strip(),
+             f"From profile: {profile_name}",
+             json.dumps(["profile", profile_path.stem]), ts())
+        )
+        added += 1
+
+    conn.commit()
+    conn.close()
+
+    print(json.dumps({
+        "status": "ok",
+        "profile": profile_name,
+        "conventions_added": added,
+        "message": f"Seeded {added} conventions from '{profile_name}' profile. They will be injected into all future teammates.",
+    }))
+
+
+def cmd_list_profiles():
+    """List all available built-in stack profiles."""
+    profiles_dir = Path(__file__).parent.parent / "profiles"
+    profiles = []
+
+    if profiles_dir.exists():
+        for f in sorted(profiles_dir.glob("*.json")):
+            try:
+                with open(f, encoding="utf-8") as fp:
+                    p = json.load(fp)
+                profiles.append({
+                    "id": f.stem,
+                    "name": p.get("name", f.stem),
+                    "description": p.get("description", ""),
+                    "stack": p.get("stack", []),
+                    "conventions_count": len(p.get("conventions", [])),
+                })
+            except Exception:
+                pass
+
+    print(json.dumps(profiles, indent=2))
+
+
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
 def main():
@@ -1034,6 +1260,19 @@ def main():
 
         elif cmd == "kb-stats":
             cmd_kb_stats(args[1:])
+
+        elif cmd == "replay-run":
+            run_id_arg = args[1] if len(args) > 1 else "latest"
+            project_dir = args[2] if len(args) > 2 else cwd
+            cmd_replay_run(run_id_arg, project_dir)
+
+        elif cmd == "seed-profile":
+            profile_arg = args[1] if len(args) > 1 else ""
+            project_dir = args[2] if len(args) > 2 else cwd
+            cmd_seed_profile(profile_arg, project_dir)
+
+        elif cmd == "list-profiles":
+            cmd_list_profiles()
 
         else:
             print(f"Unknown command: {cmd}", file=sys.stderr)

@@ -1,0 +1,22 @@
+{
+  "name": "Python (Modern Best Practices)",
+  "description": "Python 3.11+ with uv, Ruff, mypy strict, pytest, and src layout",
+  "stack": ["python", "uv", "ruff", "mypy", "pytest"],
+  "conventions": [
+    "Use uv for all package management — no pip install, no poetry, no conda",
+    "Ruff for linting and formatting — replaces black, flake8, isort, and pylint entirely",
+    "mypy in strict mode — all functions must have type annotations, no implicit Any",
+    "src layout: source code lives in src/<package_name>/ — tests in tests/ at root level",
+    "pytest for all tests — use fixtures for setup, parametrize for data-driven tests",
+    "Type hints on every function signature — use the latest syntax (list[str] not List[str])",
+    "Dataclasses or Pydantic for data models — never plain dicts for structured data",
+    "pathlib.Path for all file system operations — never os.path string manipulation",
+    "f-strings only for string formatting — never .format() or % formatting",
+    "No bare except: clauses — always catch a specific exception type",
+    "Context managers (with statements) for all resources — files, connections, locks",
+    "raise ValueError/TypeError with a descriptive message — never assert for runtime validation",
+    "Use __all__ in module __init__.py to define the public API explicitly",
+    "Log with the standard logging module — never print() in library code",
+    "Virtual environments managed by uv — .venv at project root, added to .gitignore"
+  ]
+}

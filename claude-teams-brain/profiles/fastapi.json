@@ -1,0 +1,21 @@
+{
+  "name": "FastAPI + SQLAlchemy (Async)",
+  "description": "Python FastAPI with async SQLAlchemy 2.x, Pydantic v2, Alembic, and PostgreSQL",
+  "stack": ["fastapi", "sqlalchemy", "pydantic", "alembic", "postgresql", "python"],
+  "conventions": [
+    "Use async/await everywhere — all route handlers, database calls, and service functions must be async",
+    "Pydantic v2 schemas for all request and response models — always separate from SQLAlchemy models",
+    "SQLAlchemy models in app/models/ — Pydantic schemas in app/schemas/ — never mix them",
+    "Use Alembic for all database migrations — never modify the DB schema manually",
+    "Dependency injection via FastAPI's Depends() — use it for DB sessions, auth, and shared services",
+    "Organize routers by domain in app/routers/ — one file per resource (users.py, orders.py, etc.)",
+    "Use HTTPException with appropriate status codes — never return error dicts with 200 status",
+    "All database sessions via async context manager — never leave sessions open across requests",
+    "Strict type hints everywhere — use `from __future__ import annotations` at the top of every file",
+    "Test with pytest-asyncio — mark async tests with @pytest.mark.asyncio",
+    "Background tasks via FastAPI BackgroundTasks or Celery — never block the event loop",
+    "Use pydantic-settings for config — never read os.environ directly in business logic",
+    "Return 404 via HTTPException when a resource is not found — check before any update/delete",
+    "Use UUID primary keys for all models — never integer auto-increment for public APIs"
+  ]
+}

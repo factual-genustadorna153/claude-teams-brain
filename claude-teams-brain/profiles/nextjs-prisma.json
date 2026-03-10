@@ -1,0 +1,22 @@
+{
+  "name": "Next.js + Prisma (App Router)",
+  "description": "Full-stack Next.js 14 with Prisma ORM, TypeScript, Tailwind CSS, and shadcn/ui",
+  "stack": ["nextjs", "prisma", "typescript", "tailwind", "shadcn", "react"],
+  "conventions": [
+    "Use TypeScript for all files — no plain .js or .jsx",
+    "Use Next.js 14 App Router (app/ directory) — not the Pages Router",
+    "Server Components are the default — add 'use client' only when you need interactivity or browser APIs",
+    "API endpoints go in app/api/ as Route Handlers using NextRequest/NextResponse",
+    "Use Prisma for all database access — never write raw SQL queries",
+    "Database schema lives in prisma/schema.prisma — always run `prisma generate` after changes",
+    "Run `prisma migrate dev` for local migrations and `prisma migrate deploy` in CI/CD",
+    "Use Zod for all input validation — especially API route request bodies and form inputs",
+    "Use shadcn/ui components as the base UI library — don't write custom primitives that shadcn already provides",
+    "Tailwind CSS for all styling — no CSS modules, styled-components, or inline style objects",
+    "Environment variables: NEXT_PUBLIC_ prefix for client-accessible vars, no prefix for server-only",
+    "Error boundaries at the layout level — never swallow errors silently",
+    "Use next/image for all images — never raw <img> tags",
+    "Data fetching in Server Components using async/await directly — no useEffect for initial data",
+    "Loading states use the loading.tsx file convention, not manual loading state management"
+  ]
+}

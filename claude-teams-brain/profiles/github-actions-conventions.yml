@@ -1,0 +1,183 @@
+# =============================================================================
+# claude-teams-brain — GitHub Actions CONVENTIONS.md PR Template
+# =============================================================================
+#
+# SETUP INSTRUCTIONS:
+#   1. Copy this file to .github/workflows/brain-conventions.yml in your repo
+#   2. Add a secret named GH_TOKEN with a Personal Access Token that has:
+#      - Contents: write
+#      - Pull requests: write
+#   3. Use /brain-github-export skill to push CONVENTIONS.md from your local brain,
+#      then merge that PR — from now on, this workflow keeps it updated automatically.
+#
+# HOW IT WORKS:
+#   - Runs automatically when CONVENTIONS.md is pushed to main (e.g., after /brain-github-export)
+#   - Can also be triggered manually via Actions tab with optional session notes
+#   - Opens a PR with the updated conventions for human review before merging
+#
+# MORE INFO: https://github.com/Gr122lyBr/claude-teams-brain
+# =============================================================================
+
+name: Brain Conventions PR
+
+on:
+  # Manual trigger — run from GitHub Actions tab anytime
+  workflow_dispatch:
+    inputs:
+      session_notes:
+        description: "Optional notes about this session (shown in PR body)"
+        required: false
+        default: ""
+
+  # Auto-trigger when CONVENTIONS.md is pushed to main
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "CONVENTIONS.md"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  conventions-pr:
+    name: Open Conventions PR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Check if CONVENTIONS.md exists
+        id: check
+        run: |
+          if [ ! -f CONVENTIONS.md ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::warning::CONVENTIONS.md not found. Run /brain-github-export from claude-teams-brain first."
+          else
+            echo "exists=true" >> $GITHUB_OUTPUT
+            LINES=$(wc -l < CONVENTIONS.md)
+            echo "lines=$LINES" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Skip if no CONVENTIONS.md
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          echo "No CONVENTIONS.md found — skipping PR creation."
+          exit 0
+
+      - name: Check if PR already exists for this content
+        id: existing-pr
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          EXISTING=$(gh pr list --label "ai-conventions" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+          if [ -n "$EXISTING" ]; then
+            echo "pr_number=$EXISTING" >> $GITHUB_OUTPUT
+            echo "has_open_pr=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_open_pr=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create ai-conventions label if missing
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "ai-conventions" \
+            --description "Auto-generated AI team conventions from claude-teams-brain" \
+            --color "7B68EE" 2>/dev/null || true
+
+      - name: Create branch and open PR
+        if: steps.existing-pr.outputs.has_open_pr == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="brain/conventions-${{ github.run_number }}"
+          TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M UTC')
+          SESSION_NOTES="${{ github.event.inputs.session_notes }}"
+
+          git config user.name "claude-teams-brain[bot]"
+          git config user.email "claude-teams-brain[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          git add CONVENTIONS.md
+
+          # Only commit if there are actual changes
+          if git diff --cached --quiet; then
+            echo "No changes to CONVENTIONS.md — skipping PR."
+            exit 0
+          fi
+
+          git commit -m "docs: update CONVENTIONS.md from claude-teams-brain [skip ci]"
+          git push origin "$BRANCH"
+
+          LINES=${{ steps.check.outputs.lines }}
+
+          BODY="## 🧠 AI Team Conventions Update
+
+**Generated:** $TIMESTAMP
+**Source:** [claude-teams-brain](https://github.com/Gr122lyBr/claude-teams-brain) — persistent memory for Claude Code Agent Teams
+**Size:** $LINES lines in CONVENTIONS.md
+
+$(if [ -n "$SESSION_NOTES" ]; then echo "**Session notes:** $SESSION_NOTES"; fi)
+
+---
+
+### What is this?
+
+This PR was automatically generated from accumulated AI Agent Team memory. It captures:
+
+- ✅ **Project rules & conventions** — set manually via \`/brain-remember\`
+- 🏗️ **Architectural decisions** — made by Agent Team teammates during coding sessions
+- 📁 **Key files** — tracked by agent ownership across sessions
+
+### Why review this?
+
+Merging \`CONVENTIONS.md\` makes your AI team's institutional knowledge visible to the whole human team and version-controlled in git. It also seeds future AI sessions with verified, human-reviewed conventions.
+
+### What to do
+
+1. Review the conventions — remove anything outdated or incorrect
+2. Add comments if decisions need context
+3. Merge to share with your team ✅
+
+---
+
+> 🤖 Auto-generated by [claude-teams-brain](https://github.com/Gr122lyBr/claude-teams-brain)
+> To stop these PRs, remove \`.github/workflows/brain-conventions.yml\` from your repo."
+
+          gh pr create \
+            --title "🧠 AI Team Conventions Update ($TIMESTAMP)" \
+            --body "$BODY" \
+            --label "ai-conventions" \
+            --head "$BRANCH"
+
+      - name: Update existing open PR
+        if: steps.existing-pr.outputs.has_open_pr == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=${{ steps.existing-pr.outputs.pr_number }}
+          echo "PR #$PR_NUMBER is already open for ai-conventions. Pushing to its branch."
+
+          # Get the branch of the open PR
+          BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+          git config user.name "claude-teams-brain[bot]"
+          git config user.email "claude-teams-brain[bot]@users.noreply.github.com"
+
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          git add CONVENTIONS.md
+
+          if git diff --cached --quiet; then
+            echo "No new changes — PR #$PR_NUMBER is already up to date."
+          else
+            git commit -m "docs: update CONVENTIONS.md [skip ci]"
+            git push origin "$BRANCH"
+            echo "Updated PR #$PR_NUMBER with latest CONVENTIONS.md"
+          fi

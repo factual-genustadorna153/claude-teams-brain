@@ -21,7 +21,7 @@ Your AI team gets smarter with every session. No extra prompting. No manual cont
 
 **Requirements:** Python 3.8+, Node.js 18+, Claude Code v2.1+
 
-> **Windows users:** WSL2 is required. The plugin scripts run in bash. Native Windows (cmd/PowerShell) is not supported.
+> **Works on macOS, Linux, WSL2, and native Windows.** As of v1.1.0, all hooks run via Python — no bash required.
 
 ### 1. Install the plugin
 
@@ -56,13 +56,46 @@ If `settings.json` already has content, merge the `env` block:
 }
 ```
 
-Restart Claude Code after saving.
+> **Solo mode:** Agent Teams is optional. If you skip this step, claude-teams-brain runs in solo mode — memory still builds from your own sessions and previous context is injected at every session start.
+
+### 3. Allow agent tools (required for agents to write code)
+
+When Claude spawns Agent Team teammates to build things, those agents need permission to read and write files. Without this, agents will be blocked from using Write/Edit and silently fail.
+
+Add `allowedTools` to `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "allowedTools": [
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "Bash",
+    "Glob",
+    "Grep",
+    "TodoWrite",
+    "TodoRead",
+    "WebSearch",
+    "WebFetch"
+  ]
+}
+```
+
+> **What this does:** `allowedTools` tells Claude Code to auto-approve these tools for all agents without prompting. This is safe for your own development machine — agents only run code you instruct them to run. Without it, background agents that need to create or edit files will be denied and report permission errors.
+
+> **Alternative (per-session):** If you prefer to approve tools interactively, run Claude with `--dangerously-skip-permissions` for sessions where you want agents to work unattended. This skips all approval prompts for that session only.
+
+Restart Claude Code after saving `settings.json`.
 
 ---
 
 ## Quick Start
 
-> **Important:** claude-teams-brain only works when Claude spawns Agent Team teammates. If Claude works solo, no memory is built. The two options below ensure teammates are always used.
+> **Solo mode works too.** claude-teams-brain builds memory from your own sessions even without Agent Teams. But multi-agent teams produce richer, role-specific memory — the two options below show how to trigger them.
 
 ### Option A — Trigger a team manually
 

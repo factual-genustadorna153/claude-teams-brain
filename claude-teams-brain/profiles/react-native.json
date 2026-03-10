@@ -1,0 +1,21 @@
+{
+  "name": "React Native (Expo)",
+  "description": "React Native with Expo managed workflow, TypeScript, Zustand, TanStack Query, and NativeWind",
+  "stack": ["react-native", "expo", "typescript", "zustand", "tanstack-query", "nativewind"],
+  "conventions": [
+    "Use Expo managed workflow — never eject unless an absolute requirement demands it",
+    "TypeScript strict mode is required — no any types, no @ts-ignore comments",
+    "Zustand for all global client state — no Redux, no Context API for shared state",
+    "TanStack Query (React Query) for all server state — no manual fetch/useEffect data patterns",
+    "NativeWind for styling — no StyleSheet.create, no inline style objects for layout",
+    "Navigation with Expo Router (file-based routing in app/ directory) — not react-navigation manually configured",
+    "Always wrap root content in SafeAreaView from react-native-safe-area-context",
+    "Platform-specific code in .ios.tsx / .android.tsx files — not Platform.select() inline",
+    "Use expo-image instead of React Native's Image component for better caching and performance",
+    "Error boundaries at the screen level — wrap each screen in an ErrorBoundary",
+    "Test with Jest + React Native Testing Library — test behavior not implementation",
+    "Keyboard handling via KeyboardAvoidingView — never manual keyboard height calculations",
+    "Use expo-constants for environment config — never hardcode API URLs or keys",
+    "Animations with react-native-reanimated — never Animated API from core React Native"
+  ]
+}
