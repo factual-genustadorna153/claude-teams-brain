@@ -229,6 +229,9 @@ The teammate starts with full context from day one.
 | `/brain-forget <text>` | Remove a manually stored memory |
 | `/brain-search <query>` | Search the full brain knowledge base directly |
 | `/brain-export` | Export all brain knowledge as `CONVENTIONS.md` |
+| `/brain-github-export` | Export `CONVENTIONS.md` and open a GitHub PR via `gh` CLI |
+| `/brain-seed <profile>` | Seed the brain with pre-built stack conventions (e.g. `nextjs-prisma`, `fastapi`, `go-microservices`, `react-native`, `python-general`) |
+| `/brain-replay [run-id]` | Replay a past session as a chronological narrative — timeline, decisions, files. Defaults to latest |
 | `/brain-stats` | Full stats: persistent memory + session KB |
 | `/brain-status` | Memory stats for this project |
 | `/brain-query <role>` | Preview the context a new teammate would receive |
@@ -334,20 +337,22 @@ claude-teams-brain/                    ← repo root (marketplace)
     .claude-plugin/
       plugin.json
     hooks/
-      hooks.json                       ← 6 lifecycle hooks
+      hooks.json                       ← 7 lifecycle hooks (all via Python)
     scripts/
+      hook_runner.py                   ← cross-platform hook dispatcher (macOS/Linux/Windows/WSL2)
       brain_engine.py                  ← SQLite engine (pure stdlib)
-      on-session-start.sh
-      on-subagent-start.sh             ← core: injects memory + tool guidance into teammates
-      on-subagent-stop.sh              ← rich indexing from transcript
-      on-task-completed.sh
-      on-teammate-idle.sh
-      on-session-end.sh
       update.sh                        ← pulled by /brain-update
+    profiles/                          ← stack convention profiles
+      nextjs-prisma.json               ← Next.js + Prisma + TypeScript
+      fastapi.json                     ← FastAPI + SQLAlchemy async
+      go-microservices.json            ← Go + chi + pgx
+      react-native.json                ← React Native + Expo
+      python-general.json              ← Python 3.11+ modern stack
+      github-actions-conventions.yml   ← GH Actions template for auto PR
     commands/                          ← /brain-* slash commands
       brain-remember, brain-forget, brain-search
-      brain-export, brain-status, brain-stats
-      brain-query, brain-runs, brain-clear, brain-update
+      brain-export, brain-github-export, brain-seed, brain-replay
+      brain-status, brain-stats, brain-query, brain-runs, brain-clear, brain-update
     skills/
       claude-teams-brain/              ← auto-activates for agent team workflows
       brain-update/                    ← /brain-update
@@ -355,8 +360,11 @@ claude-teams-brain/                    ← repo root (marketplace)
       brain-forget/                    ← /brain-forget
       brain-search/                    ← /brain-search
       brain-export/                    ← /brain-export
+      brain-github-export/             ← /brain-github-export
+      brain-seed/                      ← /brain-seed <profile>
+      brain-replay/                    ← /brain-replay [run-id]
       brain-stats/                     ← /brain-stats
-    settings.json                      ← enables CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+    settings.json                      ← Agent Teams env var + allowedTools for agents
 ```
 
 ---
@@ -376,16 +384,18 @@ Each project has its own isolated brain. Memory never crosses project boundaries
 
 ## Tips
 
+- **New project? Run `/brain-seed` first** — pick a stack profile (`nextjs-prisma`, `fastapi`, `go-microservices`, `react-native`, `python-general`) and teammates start informed from session one, no cold start
 - **Use descriptive agent names** that match their role (`backend`, `database`, `security`) — the brain routes memory by role name
 - **Memory compounds** — the first session is cold, but quality improves significantly from the second session onwards
-- **Use `/brain-remember`** to store project conventions before your first team session — teammates will receive them immediately
+- **Use `/brain-remember`** to store project-specific conventions on top of a seeded profile — teammates will receive them immediately
 - **Run `/brain-query backend`** to preview exactly what context the backend agent will receive before spawning
-- **Run `/brain-export`** after a few sessions to generate a `CONVENTIONS.md` you can commit to the repo
+- **Run `/brain-replay latest`** after a session to review what your AI team did — great for standups or catching up after a break
+- **Run `/brain-github-export`** to open a PR with accumulated conventions — makes AI knowledge visible to your whole human team
 - **Memory is relevance-ranked** — if you describe the task clearly when spawning teammates, the brain injects the most relevant past work first
-- **CLAUDE.md is auto-indexed** at every session start — teammates can search it via `batch_execute` queries without re-reading it manually
+- **CLAUDE.md, `.cursorrules`, and `AGENTS.md` are auto-indexed** at every session start — teammates can search them immediately without re-reading manually
 - **Use `/brain-search <query>`** to verify what the brain has indexed — great for debugging or confirming memory is building
 - **Use `/brain-stats`** to see a full breakdown of indexed tasks, decisions, and session KB usage
-- **If you see a warning about Agent Teams** on session start, add `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` to `~/.claude/settings.json` and restart
+- **Solo mode works without Agent Teams** — memory still builds from your own sessions; previous context is injected at every session start automatically
 
 ---
 
