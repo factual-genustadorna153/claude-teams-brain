@@ -118,9 +118,9 @@ claude-teams-brain hooks into six lifecycle events:
 
 | Hook | What happens |
 |------|-------------|
-| `SessionStart` | Brain initializes, indexes CLAUDE.md + git log + directory tree + config files into the session KB |
+| `SessionStart` | Brain initializes; indexes CLAUDE.md, git log, directory tree, and config files into the session KB; warns if Agent Teams env var is not set |
 | `SubagentStart` | ⭐ Role-specific memory injected — ranked by relevance to the current task, deduplicated |
-| `TaskCompleted` | Task subject and agent identity indexed immediately on completion |
+| `TaskCompleted` | Task indexed immediately; shows `🧠 Indexed: [agent] task` confirmation so you can see the brain working in real time |
 | `SubagentStop` | Rich indexing: files touched, decisions made, output summary extracted from transcript |
 | `TeammateIdle` | Passive checkpoint |
 | `SessionEnd` | Full session compressed into a summary entry |
@@ -299,11 +299,17 @@ claude-teams-brain/                    ← repo root (marketplace)
       on-session-end.sh
       update.sh                        ← pulled by /brain-update
     commands/                          ← /brain-* slash commands
+      brain-remember, brain-forget, brain-search
+      brain-export, brain-status, brain-stats
+      brain-query, brain-runs, brain-clear, brain-update
     skills/
       claude-teams-brain/              ← auto-activates for agent team workflows
       brain-update/                    ← /brain-update
       brain-remember/                  ← /brain-remember
+      brain-forget/                    ← /brain-forget
+      brain-search/                    ← /brain-search
       brain-export/                    ← /brain-export
+      brain-stats/                     ← /brain-stats
     settings.json                      ← enables CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
 ```
 
@@ -331,6 +337,9 @@ Each project has its own isolated brain. Memory never crosses project boundaries
 - **Run `/brain-export`** after a few sessions to generate a `CONVENTIONS.md` you can commit to the repo
 - **Memory is relevance-ranked** — if you describe the task clearly when spawning teammates, the brain injects the most relevant past work first
 - **CLAUDE.md is auto-indexed** at every session start — teammates can search it via `batch_execute` queries without re-reading it manually
+- **Use `/brain-search <query>`** to verify what the brain has indexed — great for debugging or confirming memory is building
+- **Use `/brain-stats`** to see a full breakdown of indexed tasks, decisions, and session KB usage
+- **If you see a warning about Agent Teams** on session start, add `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` to `~/.claude/settings.json` and restart
 
 ---
 
