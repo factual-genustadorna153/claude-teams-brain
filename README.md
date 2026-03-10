@@ -17,6 +17,67 @@ Your AI team gets smarter with every session. No extra prompting. No manual cont
 
 ---
 
+## Installation
+
+**Requirements:** Python 3.8+, Node.js 18+, Claude Code v2.1+
+
+### 1. Install the plugin
+
+In Claude Code, run:
+
+```
+/plugin marketplace add https://github.com/Gr122lyBr/claude-teams-brain
+/plugin install claude-teams-brain@claude-teams-brain
+```
+
+### 2. Enable Agent Teams
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  }
+}
+```
+
+If `settings.json` already has content, merge the `env` block:
+
+```json
+{
+  "someExistingSetting": true,
+  "env": {
+    "YOUR_EXISTING_VAR": "value",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  }
+}
+```
+
+Restart Claude Code after saving.
+
+### 3. Configure CLAUDE.md (recommended)
+
+Add to your project's `CLAUDE.md` to make Claude automatically use Agent Teams:
+
+```markdown
+## Agent Teams
+
+Always use agent teams for tasks that can be parallelized across concerns.
+Spawn specialized teammates with role-specific names rather than doing everything
+in a single session. Good team structures:
+
+- Feature work: `backend`, `frontend`, `tests`
+- Reviews: `security`, `performance`, `coverage`
+- Architecture: `architect`, `devil-advocate`, `implementer`
+- Debugging: name teammates after the hypothesis they're testing
+
+The claude-teams-brain plugin is active — each teammate will automatically receive
+memory from past sessions relevant to their role.
+```
+
+---
+
 ## Why this matters
 
 Agent Teams introduced true multi-agent parallelism to Claude Code — teammates that communicate directly, own separate file scopes, and collaborate without a single-session bottleneck. But they have one fundamental weakness:
@@ -116,67 +177,6 @@ Returns bytes indexed vs bytes returned, call counts, and context savings ratio.
 
 ---
 
-## Installation
-
-**Requirements:** Python 3.8+, Node.js 18+, Claude Code v2.1+
-
-### 1. Install the plugin
-
-In Claude Code, run:
-
-```
-/plugin marketplace add https://github.com/Gr122lyBr/claude-teams-brain
-/plugin install claude-teams-brain@claude-teams-brain
-```
-
-### 2. Enable Agent Teams
-
-Add to `~/.claude/settings.json`:
-
-```json
-{
-  "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
-  }
-}
-```
-
-If `settings.json` already has content, merge the `env` block:
-
-```json
-{
-  "someExistingSetting": true,
-  "env": {
-    "YOUR_EXISTING_VAR": "value",
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
-  }
-}
-```
-
-Restart Claude Code after saving.
-
-### 3. Configure CLAUDE.md (recommended)
-
-Add to your project's `CLAUDE.md` to make Claude automatically use Agent Teams:
-
-```markdown
-## Agent Teams
-
-Always use agent teams for tasks that can be parallelized across concerns.
-Spawn specialized teammates with role-specific names rather than doing everything
-in a single session. Good team structures:
-
-- Feature work: `backend`, `frontend`, `tests`
-- Reviews: `security`, `performance`, `coverage`  
-- Architecture: `architect`, `devil-advocate`, `implementer`
-- Debugging: name teammates after the hypothesis they're testing
-
-The claude-teams-brain plugin is active — each teammate will automatically receive
-memory from past sessions relevant to their role.
-```
-
----
-
 ## Usage
 
 Once installed, the brain works silently in the background. Just use Agent Teams normally.
@@ -225,6 +225,7 @@ The teammate starts with full context from day one.
 | `/claude-teams-brain:brain-query <role>` | Preview the context a new teammate would receive |
 | `/claude-teams-brain:brain-runs` | List past Agent Team sessions |
 | `/claude-teams-brain:brain-clear` | Reset all memory for this project |
+| `/claude-teams-brain:brain-update` | Pull the latest version from GitHub |
 
 ---
 
@@ -242,13 +243,16 @@ claude-teams-brain/                    ← repo root (marketplace)
     scripts/
       brain_engine.py                  ← SQLite engine (pure stdlib)
       on-session-start.sh
-      on-subagent-start.sh             ← core: injects memory into teammates
+      on-subagent-start.sh             ← core: injects memory + tool guidance into teammates
       on-subagent-stop.sh              ← rich indexing from transcript
       on-task-completed.sh
       on-teammate-idle.sh
       on-session-end.sh
+      update.sh                        ← pulled by /brain-update skill
     commands/                          ← /brain-* slash commands
-    skills/claude-teams-brain/          ← auto-activates for agent team workflows
+    skills/
+      claude-teams-brain/              ← auto-activates for agent team workflows
+      brain-update/                    ← /brain-update: pull latest from GitHub
     settings.json                      ← enables CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
 ```
 
