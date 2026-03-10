@@ -1,6 +1,6 @@
 {
   "name": "claude-teams-brain",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Persistent cross-session memory for Claude Code Agent Teams",
   "type": "module",
   "main": "start.mjs",
@@ -11,11 +11,18 @@
     "claude",
     "claude-code",
     "claude-code-plugins",
+    "claude-code-plugin",
     "agent-teams",
+    "multi-agent",
     "mcp",
     "memory",
+    "persistent-memory",
+    "context",
     "sqlite",
-    "fts5"
+    "fts5",
+    "ai-agents",
+    "llm",
+    "token-optimization"
   ],
   "author": "Gr122lyBr",
   "license": "MIT",

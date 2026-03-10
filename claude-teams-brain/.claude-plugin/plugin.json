@@ -1,6 +1,6 @@
 {
   "name": "claude-teams-brain",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Persistent cross-session memory for Agent Teams. Automatically indexes teammate outputs, decisions, and file changes — then injects role-specific context into each new teammate so your team never starts blind.",
   "author": {
     "name": "claude-teams-brain contributors",
@@ -9,7 +9,7 @@
   "homepage": "https://github.com/Gr122lyBr/claude-teams-brain",
   "repository": "https://github.com/Gr122lyBr/claude-teams-brain",
   "license": "MIT",
-  "keywords": ["agent-teams", "memory", "context", "persistence", "multi-agent"],
+  "keywords": ["agent-teams", "memory", "context", "persistence", "multi-agent", "mcp", "token-optimization", "ai-agents", "sqlite", "claude-code"],
   "mcpServers": {
     "claude-teams-brain": {
       "command": "node",

@@ -4,6 +4,7 @@
 
 # claude-teams-brain
 
+[![CI](https://github.com/Gr122lyBr/claude-teams-brain/actions/workflows/ci.yml/badge.svg)](https://github.com/Gr122lyBr/claude-teams-brain/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://python.org)
 [![Node](https://img.shields.io/badge/node-18%2B-green.svg)](https://nodejs.org)
@@ -20,6 +21,8 @@ Your AI team gets smarter with every session. No extra prompting. No manual cont
 ## Installation
 
 **Requirements:** Python 3.8+, Node.js 18+, Claude Code v2.1+
+
+> **Windows users:** WSL2 is required. The plugin scripts run in bash. Native Windows (cmd/PowerShell) is not supported.
 
 ### 1. Install the plugin
 
@@ -112,6 +115,8 @@ All data lives in `~/.claude-teams-brain/projects/<project-hash>/brain.db` — a
 ## MCP Tools
 
 claude-teams-brain includes an MCP server that exposes five tools to all Task subagents. These tools keep large command output out of context windows by indexing it into a session knowledge base and returning only relevant search results.
+
+> **Token savings in practice:** running `npm test` or `git log` via `batch_execute` typically returns 200–500 tokens of targeted results instead of 5,000–20,000 tokens of raw output — a **90–97% reduction** per call. Use `/brain-status` at the end of a session to see your actual savings.
 
 ### batch_execute
 

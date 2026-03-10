@@ -38,6 +38,8 @@ MSG=""
 if [ "$TASKS" -gt 0 ]; then
   LAST=$(echo "$STATS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('last_activity','') or '')" 2>/dev/null || echo "")
   MSG="🧠 claude-brain active: ${TASKS} tasks indexed across ${RUNS} sessions (last: ${LAST}). Role-specific context will be auto-injected into each teammate on spawn."
+else
+  MSG="🧠 claude-teams-brain is installed and ready. Memory is empty for this project — it will build automatically as you run Agent Team sessions. Spawn your first team to get started."
 fi
 
 if [ -n "$UPDATE_HINT" ]; then
