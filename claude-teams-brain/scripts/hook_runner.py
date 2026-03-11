@@ -117,6 +117,50 @@ def extract_decisions_from_text(text, max_chars=500):
     return decisions
 
 
+def extract_decisions_llm(text: str, timeout: int = 8) -> list:
+    """Extract decisions via Claude API if ANTHROPIC_API_KEY is available. Falls back silently."""
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    if not api_key or not text.strip():
+        return []
+    try:
+        import urllib.request as urlreq
+        payload = json.dumps({
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 300,
+            "messages": [{
+                "role": "user",
+                "content": (
+                    "Extract key technical decisions from this text. "
+                    "Return ONLY a JSON array of short strings (max 15 words each). "
+                    "Include only concrete decisions (what was chosen, built, or changed). "
+                    "If no decisions, return [].\n\n"
+                    f"{text[:1500]}"
+                )
+            }]
+        }).encode()
+        req = urlreq.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+        )
+        with urlreq.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+            raw = result['content'][0]['text'].strip()
+            # Strip markdown code fences if present
+            raw = re.sub(r'^```[a-z]*\n?', '', raw)
+            raw = re.sub(r'\n?```$', '', raw)
+            decisions = json.loads(raw)
+            if isinstance(decisions, list):
+                return [str(d)[:500] for d in decisions if isinstance(d, str) and d.strip()]
+    except Exception:
+        pass
+    return []
+
+
 def dir_tree(project_dir):
     """Pure-Python directory tree (cross-platform, no find/ls needed)."""
     exclude = {
@@ -173,6 +217,33 @@ def check_version():
     return ""
 
 
+def detect_stack(project_dir: str) -> str:
+    """Detect project stack from files. Returns profile name or empty string."""
+    root = Path(project_dir)
+    try:
+        pkg_path = root / 'package.json'
+        if pkg_path.exists():
+            pkg = pkg_path.read_text(encoding='utf-8', errors='ignore').lower()
+            if 'react-native' in pkg or '"expo"' in pkg:
+                return 'react-native'
+            if '"next"' in pkg or 'nextjs' in pkg:
+                return 'nextjs-prisma'
+
+        for fname in ['requirements.txt', 'pyproject.toml', 'setup.py']:
+            fpath = root / fname
+            if fpath.exists():
+                content = fpath.read_text(encoding='utf-8', errors='ignore').lower()
+                if 'fastapi' in content:
+                    return 'fastapi'
+                return 'python-general'
+
+        if (root / 'go.mod').exists():
+            return 'go-microservices'
+    except Exception:
+        pass
+    return ''
+
+
 def warmup(project_dir):
     """Index project context sources into the session KB."""
     # 1. CLAUDE.md
@@ -214,6 +285,18 @@ def warmup(project_dir):
         if conv_path.exists() and conv_path.stat().st_size > 100:
             run_engine("kb-index", project_dir, conv_file, str(conv_path))
 
+    # 6. Auto-seed stack conventions if brain has no existing memories
+    try:
+        status_raw = run_engine("status", project_dir)
+        status = json.loads(status_raw) if status_raw else {}
+        if status.get("decisions", 0) == 0:
+            profile = detect_stack(project_dir)
+            if profile:
+                run_engine("seed-profile", profile, project_dir)
+                index_text(project_dir, "auto-stack", f"Auto-detected stack: {profile}. Conventions seeded.")
+    except Exception:
+        pass
+
 
 TOOL_GUIDANCE = """\
 ## Token-Efficient Tools (claude-teams-brain)
@@ -225,6 +308,32 @@ Prefer these MCP tools over direct Bash calls to minimise context usage:
 - `stats` — view token savings and call counts for this session
 
 Always prefer `batch_execute` when issuing more than one shell command."""
+
+# Role keyword mapping for inference
+ROLE_KEYWORDS = {
+    'frontend':  ['react', 'vue', 'angular', 'css', 'html', 'tailwind', 'component', 'ui ', 'layout', 'style'],
+    'backend':   ['api', 'server', 'endpoint', 'route', 'middleware', 'express', 'fastapi', 'django', 'rest'],
+    'database':  ['sql', 'migration', 'schema', 'postgres', 'mysql', 'sqlite', 'prisma', 'orm', 'query', 'seed'],
+    'tests':     ['test', 'spec', 'jest', 'pytest', 'coverage', 'mock', 'assert', 'unit', 'integration', 'e2e'],
+    'devops':    ['docker', 'kubernetes', 'deploy', 'pipeline', 'ci/cd', 'nginx', 'github action', 'terraform'],
+    'security':  ['auth', 'jwt', 'oauth', 'permission', 'encrypt', 'hash', 'csrf', 'xss', 'vulnerab'],
+    'architect': ['architecture', 'design', 'refactor', 'structure', 'pattern', 'monolith', 'microservice'],
+}
+
+
+def infer_role(role: str, task_desc: str) -> str:
+    """If role is generic, infer from task description keywords."""
+    if role and role not in ('general', 'unknown', ''):
+        return role
+    desc_lower = task_desc.lower()
+    scores = {}
+    for candidate, keywords in ROLE_KEYWORDS.items():
+        score = sum(1 for kw in keywords if kw in desc_lower)
+        if score > 0:
+            scores[candidate] = score
+    if scores:
+        return max(scores, key=scores.get)
+    return role or 'general'
 
 
 # ── Hook handlers ──────────────────────────────────────────────────────────────
@@ -334,6 +443,9 @@ def hook_subagent_start(data):
         data.get("description") or data.get("message") or ""
     )[:500]
 
+    # Infer role from task description if agent_type is generic
+    agent_type = infer_role(agent_type, task_desc)
+
     context_raw = run_engine("query-role", agent_type, project_dir, task_desc)
     try:
         context = json.loads(context_raw).get("additionalContext", "")
@@ -432,6 +544,16 @@ def hook_subagent_stop(data):
         re.sub(r"[-_]?(agent|teammate|worker|bot)$", "", agent_name, flags=re.I).strip()
         or agent_name
     )
+    # Infer role if still generic
+    hint = last_message[:500] if last_message else ""
+    role = infer_role(role, hint)
+
+    # Enhance decisions with LLM extraction if API key available
+    if output_summary:
+        llm_decisions = extract_decisions_llm(output_summary)
+        for d in llm_decisions:
+            if d not in decisions:
+                decisions.append(d)
 
     payload = {
         "project_dir": project_dir,

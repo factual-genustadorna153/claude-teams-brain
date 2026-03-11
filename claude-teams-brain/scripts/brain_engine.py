@@ -22,6 +22,9 @@ Usage:
   brain_engine.py replay-run <run_id_or_latest> [<project_dir>]
   brain_engine.py seed-profile <profile_name_or_path> [<project_dir>]
   brain_engine.py list-profiles
+  brain_engine.py role-stats [<project_dir>]
+  brain_engine.py decision-timeline [<project_dir>]
+  brain_engine.py kb-source-age <project_dir> <source>
 """
 
 import sys
@@ -412,8 +415,8 @@ def kb_search_query(conn, query, limit=5):
     return results[:limit]
 
 
-def score_relevance(text: str, keywords: list) -> int:
-    """Score a text by how many task keywords it contains (word-boundary aware)."""
+def score_relevance(text: str, keywords: list, completed_at: str = '') -> int:
+    """Score a text by keyword matches (word-boundary aware) with recency boost."""
     if not keywords or not text:
         return 0
     t = text.lower()
@@ -425,7 +428,85 @@ def score_relevance(text: str, keywords: list) -> int:
         except re.error:
             if kw in t:
                 score += 1
+
+    # Recency boost: +2 for last 7 days, +1 for last 30 days
+    if completed_at:
+        try:
+            from datetime import datetime, timezone, timedelta
+            dt = datetime.fromisoformat(completed_at.replace('Z', '+00:00'))
+            now = datetime.now(timezone.utc)
+            age = (now - dt).days
+            if age <= 7:
+                score += 2
+            elif age <= 30:
+                score += 1
+        except Exception:
+            pass
     return score
+
+
+# Decision type classification keywords
+DECISION_TYPE_KEYWORDS = {
+    'architecture': ['architect', 'structure', 'pattern', 'monolith', 'microservice', 'layer', 'module', 'design', 'separation', 'coupling'],
+    'dependency':   ['install', 'package', 'library', 'framework', 'version', 'upgrade', 'npm', 'pip', 'dependency', 'import'],
+    'convention':   ['convention', 'standard', 'rule', 'naming', 'format', 'style', 'lint', 'always', 'never', 'must'],
+    'pattern':      ['pattern', 'approach', 'strategy', 'factory', 'singleton', 'hook', 'middleware', 'handler', 'service'],
+    'tooling':      ['tool', 'script', 'build', 'test runner', 'ci', 'docker', 'webpack', 'vite', 'jest', 'deploy'],
+}
+
+
+def tag_decision_type(text: str) -> str:
+    """Return the most likely decision type tag."""
+    t = text.lower()
+    scores = {}
+    for dtype, keywords in DECISION_TYPE_KEYWORDS.items():
+        score = sum(1 for kw in keywords if kw in t)
+        if score > 0:
+            scores[dtype] = score
+    return max(scores, key=scores.get) if scores else 'general'
+
+
+# Word pairs that signal contradictions
+CONFLICT_PAIRS = [
+    ({'use', 'using', 'chose', 'prefer', 'adopt'}, {'avoid', 'never', 'remove', 'replace', 'drop', 'migrate away'}),
+]
+
+
+def detect_conflicts(conn, new_decisions: list, agent_role: str) -> list:
+    """Check new decisions against stored ones for potential contradictions."""
+    if not new_decisions:
+        return []
+    conflicts = []
+    try:
+        existing = conn.execute(
+            "SELECT decisions FROM tasks WHERE agent_role != '' ORDER BY completed_at DESC LIMIT 50"
+        ).fetchall()
+        existing_texts = []
+        for row in existing:
+            try:
+                existing_texts.extend(json.loads(row['decisions'] or '[]'))
+            except Exception:
+                pass
+
+        for new_dec in new_decisions:
+            new_lower = new_dec.lower()
+            # Extract tech/topic words (nouns, capitalized, or after "use/prefer/avoid")
+            new_topics = set(re.findall(r'\b[A-Z][a-z]+\b|\b[a-z]{4,}\b', new_dec))
+            for existing_dec in existing_texts:
+                ex_lower = existing_dec.lower()
+                ex_topics = set(re.findall(r'\b[A-Z][a-z]+\b|\b[a-z]{4,}\b', existing_dec))
+                shared = new_topics & ex_topics
+                if len(shared) >= 2:
+                    # Check for opposite sentiment
+                    new_positive = any(w in new_lower for w in ['use', 'using', 'chose', 'prefer', 'adopt', 'switch to'])
+                    new_negative = any(w in new_lower for w in ['avoid', 'never', 'remove', 'replace', 'drop'])
+                    ex_positive = any(w in ex_lower for w in ['use', 'using', 'chose', 'prefer', 'adopt', 'switch to'])
+                    ex_negative = any(w in ex_lower for w in ['avoid', 'never', 'remove', 'replace', 'drop'])
+                    if (new_positive and ex_negative) or (new_negative and ex_positive):
+                        conflicts.append(f"\u26a0\ufe0f Possible conflict: '{new_dec[:80]}' vs '{existing_dec[:80]}'")
+    except Exception:
+        pass
+    return conflicts[:3]  # Cap at 3 warnings
 
 
 def summarize_large_content(content: str, max_bytes: int = 8000) -> str:
@@ -510,7 +591,12 @@ def cmd_index_task(payload_str: str):
 
     task_id = uid()
     files = json.dumps(p.get("files_touched", []))
-    decisions = json.dumps(p.get("decisions", []))
+    raw_decisions = p.get("decisions", [])
+    tagged_decisions = [
+        f"[{tag_decision_type(d)}] {d}" if not d.startswith('[') else d
+        for d in raw_decisions
+    ]
+    decisions = json.dumps(tagged_decisions)
 
     conn.execute(
         """INSERT INTO tasks
@@ -550,8 +636,15 @@ def cmd_index_task(payload_str: str):
         )
 
     conn.commit()
+
+    # Detect conflicts with existing decisions
+    conflict_warnings = detect_conflicts(conn, p.get("decisions", []), p.get("agent_role", ""))
+
     conn.close()
-    print(json.dumps({"status": "ok", "task_id": task_id}))
+    result = {"status": "ok", "task_id": task_id}
+    if conflict_warnings:
+        result["conflicts"] = conflict_warnings
+    print(json.dumps(result))
 
 
 def cmd_query_role(role: str, project_dir: str, task_description: str = ""):
@@ -581,7 +674,8 @@ def cmd_query_role(role: str, project_dir: str, task_description: str = ""):
             role_tasks,
             key=lambda t: score_relevance(
                 (t["task_subject"] or "") + " " + (t["output_summary"] or ""),
-                task_keywords
+                task_keywords,
+                t["completed_at"] or ''
             ),
             reverse=True
         )
@@ -1223,6 +1317,83 @@ def cmd_list_profiles():
     print(json.dumps(profiles, indent=2))
 
 
+def cmd_decision_timeline(project_dir: str):
+    """Print all decisions chronologically, grouped by role."""
+    conn = get_conn(project_dir)
+    rows = conn.execute(
+        """SELECT t.agent_role, t.decisions, t.completed_at, t.task_subject
+           FROM tasks t
+           WHERE t.decisions != '[]' AND t.decisions IS NOT NULL
+           ORDER BY t.completed_at ASC"""
+    ).fetchall()
+    conn.close()
+
+    lines = ["# Decision Timeline\n"]
+    for row in rows:
+        try:
+            decs = json.loads(row['decisions'] or '[]')
+        except Exception:
+            continue
+        if not decs:
+            continue
+        ts_str = (row['completed_at'] or '')[:10]
+        role = row['agent_role'] or 'unknown'
+        lines.append(f"## [{ts_str}] {role} — {(row['task_subject'] or '')[:60]}")
+        for d in decs:
+            lines.append(f"- {d}")
+        lines.append("")
+    print(json.dumps({"timeline": "\n".join(lines)}))
+
+
+def cmd_role_stats(project_dir: str):
+    """Print per-role stats as JSON."""
+    conn = get_conn(project_dir)
+    rows = conn.execute(
+        """SELECT agent_role,
+                  COUNT(DISTINCT t.id)         AS task_count,
+                  COUNT(DISTINCT fi.file_path)  AS file_count,
+                  MAX(t.completed_at)           AS last_active
+           FROM tasks t
+           LEFT JOIN file_index fi ON fi.task_id = t.id
+           WHERE agent_role != ''
+           GROUP BY agent_role
+           ORDER BY task_count DESC"""
+    ).fetchall()
+    conn.close()
+    result = [
+        {
+            "role": r["agent_role"],
+            "tasks": r["task_count"],
+            "files": r["file_count"],
+            "last_active": r["last_active"],
+        }
+        for r in rows
+    ]
+    print(json.dumps(result))
+
+
+def cmd_kb_source_age(args):
+    """Return hours since a KB source was last indexed. -1 if never."""
+    project_dir, source = args[0], args[1]
+    conn = get_conn(project_dir)
+    row = conn.execute(
+        "SELECT MAX(indexed_at) FROM kb_chunks WHERE source = ?", (source,)
+    ).fetchone()
+    conn.close()
+    last = row[0] if row and row[0] else None
+    if not last:
+        print(json.dumps({"hours_ago": -1}))
+        return
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(last.replace('Z', '+00:00'))
+        now = datetime.now(timezone.utc)
+        hours = (now - dt).total_seconds() / 3600
+        print(json.dumps({"hours_ago": round(hours, 1)}))
+    except Exception:
+        print(json.dumps({"hours_ago": -1}))
+
+
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
 def main():
@@ -1305,6 +1476,15 @@ def main():
 
         elif cmd == "list-profiles":
             cmd_list_profiles()
+
+        elif cmd == "role-stats":
+            cmd_role_stats(args[1] if len(args) > 1 else cwd)
+
+        elif cmd == "decision-timeline":
+            cmd_decision_timeline(args[1] if len(args) > 1 else cwd)
+
+        elif cmd == "kb-source-age":
+            cmd_kb_source_age(args[1:])
 
         else:
             print(f"Unknown command: {cmd}", file=sys.stderr)
