@@ -251,11 +251,13 @@ The teammate starts with full context from day one.
 
 ### Updating the plugin
 
+> **On version < 1.1.2?** `/brain-update` had a bug where it silently skipped updating the install path, so after restart the old version kept loading. Skip `/brain-update` and use the bootstrap script below instead.
+
 ```
 /brain-update
 ```
 
-If you installed an older version and `/brain-update` is not yet available, or if the update fails with a "Source path does not exist" error, run the bootstrap script instead:
+If you are on an older version, or if the update fails with a "Source path does not exist" error, run the bootstrap script instead:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Gr122lyBr/claude-teams-brain/master/scripts/install.sh)
