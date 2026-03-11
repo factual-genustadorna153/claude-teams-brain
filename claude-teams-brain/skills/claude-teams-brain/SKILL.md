@@ -17,6 +17,35 @@ claude-teams-brain automatically indexes everything Agent Teams produce — task
 - Use `/brain-query <role>` to preview what context a new teammate would receive
 - Use `/brain-runs` to review past sessions
 
+## Plan mode for complex tasks
+
+Before spawning a team, assess task complexity. Use **plan mode** when:
+- The task spans 3+ independent areas (backend, frontend, database, etc.)
+- Architecture or approach decisions need to be made before implementation
+- You need to identify which subtasks can run in parallel vs sequentially
+
+**Workflow:**
+1. Enter plan mode with `EnterPlanMode`
+2. Break the task into subtasks — label each with a role name and mark dependencies
+3. Identify which subtasks have no dependencies → these can run **in parallel**
+4. Exit plan mode with `ExitPlanMode`, then spawn agents
+
+## Parallel agent spawning
+
+Independent subtasks must be spawned in **parallel** — send multiple `Task` tool calls in a single message. Never wait for one agent to finish before starting another unrelated agent.
+
+```
+Spawn these three agents simultaneously in a single message:
+- backend: implement REST endpoints for /users and /posts
+- frontend: build the React components for the user profile page
+- tests: write integration tests for the existing auth flow
+```
+
+**Parallelism rules:**
+- No dependency on each other → spawn in parallel (same message)
+- Depends on another agent's output → spawn sequentially after that agent completes
+- Agents share context via the brain KB — use `index()` to share findings across parallel agents
+
 ## How to spawn a memory-aware Agent Team
 When creating a team, the brain works automatically. Just spawn your team normally:
 

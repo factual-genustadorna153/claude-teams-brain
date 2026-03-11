@@ -65,6 +65,26 @@
             "timeout": 8
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py pretooluse-bash",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py pretooluse-read",
+            "timeout": 3
+          }
+        ]
       }
     ],
     "SessionEnd": [

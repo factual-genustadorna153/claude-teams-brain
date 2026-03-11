@@ -245,11 +245,14 @@ def detect_stack(project_dir: str) -> str:
 
 
 def warmup(project_dir):
-    """Index project context sources into the session KB."""
+    """Index project context sources into the session KB. Returns list of indexed source names."""
+    indexed = []
+
     # 1. CLAUDE.md
     claude_md = Path(project_dir) / "CLAUDE.md"
     if claude_md.exists() and claude_md.stat().st_size > 200:
         run_engine("kb-index", project_dir, "CLAUDE.md", str(claude_md))
+        indexed.append("CLAUDE.md")
 
     # 2. Git history
     try:
@@ -259,6 +262,7 @@ def warmup(project_dir):
         )
         if result.stdout.strip():
             index_text(project_dir, "git-log", result.stdout)
+            indexed.append("git-log")
     except Exception:
         pass
 
@@ -267,6 +271,7 @@ def warmup(project_dir):
         tree = dir_tree(project_dir)
         if tree:
             index_text(project_dir, "directory-tree", tree)
+            indexed.append("dir-tree")
     except Exception:
         pass
 
@@ -278,12 +283,14 @@ def warmup(project_dir):
         cfg_path = Path(project_dir) / cfg
         if cfg_path.exists() and cfg_path.stat().st_size < 10000:
             run_engine("kb-index", project_dir, cfg, str(cfg_path))
+            indexed.append(cfg)
 
     # 5. Auto-seed from existing convention files (zero-config onboarding)
     for conv_file in [".cursorrules", "AGENTS.md", "CONVENTIONS.md"]:
         conv_path = Path(project_dir) / conv_file
         if conv_path.exists() and conv_path.stat().st_size > 100:
             run_engine("kb-index", project_dir, conv_file, str(conv_path))
+            indexed.append(conv_file)
 
     # 6. Auto-seed stack conventions if brain has no existing memories
     try:
@@ -294,8 +301,11 @@ def warmup(project_dir):
             if profile:
                 run_engine("seed-profile", profile, project_dir)
                 index_text(project_dir, "auto-stack", f"Auto-detected stack: {profile}. Conventions seeded.")
+                indexed.append(f"stack:{profile}")
     except Exception:
         pass
+
+    return indexed
 
 
 TOOL_GUIDANCE = """\
@@ -361,7 +371,7 @@ def hook_session_start(data):
     run_engine("init-run", project_dir, session_id)
 
     # Session warm-up: index project context for instant teammate access
-    warmup(project_dir)
+    kb_sources = warmup(project_dir)
 
     # Read stats
     stats_raw = run_engine("status", project_dir)
@@ -394,31 +404,38 @@ def hook_session_start(data):
         # catching tasks indexed by older versions that stored empty agent_role
 
     # ── Status message ───────────────────────────────────────────────────────
+    kb_line = f"KB warmed: {' · '.join(kb_sources[:6])}" if kb_sources else ""
+
     if tasks > 0:
         if teams_enabled:
             msg = (
-                f"🧠 claude-teams-brain active: {tasks} tasks · {decisions} decisions · "
-                f"{runs} sessions (last: {last}). "
-                "Role-specific context will be auto-injected into each teammate on spawn."
+                f"🧠 claude-teams-brain active\n"
+                f"Memory: {tasks} tasks · {decisions} decisions · {runs} sessions (last: {last})\n"
+                + (f"{kb_line}\n" if kb_line else "")
+                + "Role-specific context will be auto-injected into each teammate on spawn."
             )
         else:
             msg = (
-                f"🧠 claude-teams-brain active (solo mode): {tasks} tasks · "
-                f"{decisions} decisions · {runs} sessions (last: {last}). "
-                "Previous session context injected below."
+                f"🧠 claude-teams-brain active (solo mode)\n"
+                f"Memory: {tasks} tasks · {decisions} decisions · {runs} sessions (last: {last})\n"
+                + (f"{kb_line}\n" if kb_line else "")
+                + "Previous session context injected below."
             )
     else:
         if teams_enabled:
             msg = (
-                "🧠 claude-teams-brain is installed and ready. "
+                "🧠 claude-teams-brain is installed and ready.\n"
                 "Memory is empty for this project — it will build automatically "
-                "as you run Agent Team sessions. Spawn your first team to get started."
+                "as you run Agent Team sessions.\n"
+                + (f"{kb_line}\n" if kb_line else "")
+                + "Spawn your first team to get started."
             )
         else:
             msg = (
-                "🧠 claude-teams-brain is installed (solo mode). "
-                "Memory is empty — it will build automatically as you work. "
-                "Your decisions, files, and context will be remembered across sessions."
+                "🧠 claude-teams-brain is installed (solo mode).\n"
+                "Memory is empty — it will build automatically as you work.\n"
+                + (f"{kb_line}\n" if kb_line else "")
+                + "Your decisions, files, and context will be remembered across sessions."
             )
 
     # Solo mode tip (only shown when teams not enabled)
@@ -466,7 +483,12 @@ def hook_subagent_start(data):
     except Exception:
         context = ""
 
-    full = f"{context}\n\n{TOOL_GUIDANCE}" if context else TOOL_GUIDANCE
+    if context:
+        header = f"🧠 Brain → [{agent_type}] context loaded from memory"
+        full = f"{header}\n\n{context}\n\n{TOOL_GUIDANCE}"
+    else:
+        header = f"🧠 Brain → [{agent_type}] (no prior history for this role — memory will build after this session)"
+        full = f"{header}\n\n{TOOL_GUIDANCE}"
     emit_context("SubagentStart", full)
 
 
@@ -582,6 +604,11 @@ def hook_subagent_stop(data):
     }
     run_engine("index-task", input_data=json.dumps(payload))
 
+    # Emit brief confirmation so the user sees the brain captured the agent's work
+    decision_note = f" · {len(decisions)} decision(s) captured" if decisions else ""
+    file_note = f" · {len(files_touched)} file(s) tracked" if files_touched else ""
+    emit_context("SubagentStop", f"🧠 [{agent_name}] work indexed{decision_note}{file_note}")
+
 
 def hook_task_completed(data):
     project_dir = get_project_dir()
@@ -630,7 +657,8 @@ def hook_task_completed(data):
 
     if task_subject:
         prefix = f"[{agent_name}] " if agent_name not in ("solo", "") else ""
-        emit_context("TaskCompleted", f"🧠 Indexed: {prefix}{task_subject}")
+        decision_note = f" · {len(decisions)} decision(s)" if decisions else ""
+        emit_context("TaskCompleted", f"🧠 Indexed: {prefix}{task_subject}{decision_note}")
 
 
 def hook_teammate_idle(data):
@@ -654,16 +682,61 @@ def hook_pretooluse_task(data):
         emit_context("PreToolUse", context)
 
 
+# Commands that tend to produce large output — worth redirecting to brain tools
+_LARGE_OUTPUT_CMDS = [
+    "npm test", "npm run", "yarn test", "yarn run", "pnpm test", "pnpm run",
+    "pytest", "jest", "vitest", "cargo test", "go test",
+    "git log", "git diff", "git show", "git blame",
+    "grep", "rg ", "ripgrep", "find ",
+    "cat ", "head ", "tail ",
+    "docker", "kubectl", "helm",
+    "pip list", "npm list", "yarn list",
+    "ps aux", "netstat", "lsof", "df ", "du ",
+]
+
+
+def hook_pretooluse_bash(data):
+    tool_input = data.get("tool_input", {}) or {}
+    command = (tool_input.get("command", "") or "").lower()
+    if not command:
+        return
+
+    if any(pat in command for pat in _LARGE_OUTPUT_CMDS):
+        emit_context("PreToolUse", (
+            "💡 brain tip: This command may produce large output. "
+            "Use `batch_execute` (2+ commands) or `execute(intent=\"...\")` (1 command) "
+            "— output is auto-indexed, only relevant snippets enter context."
+        ))
+
+
+def hook_pretooluse_read(data):
+    tool_input = data.get("tool_input", {}) or {}
+    file_path = tool_input.get("file_path", "") or ""
+    limit = tool_input.get("limit")
+
+    # Only tip when reading an entire file (no limit scoping)
+    if not file_path or limit:
+        return
+
+    emit_context("PreToolUse", (
+        "💡 brain tip: For large files use "
+        "`execute(language=\"shell\", code=\"cat <file>\", intent=\"what you need\")` "
+        "— auto-indexes content, only relevant snippets enter context."
+    ))
+
+
 # ── Entrypoint ─────────────────────────────────────────────────────────────────
 
 HANDLERS = {
-    "session-start":   hook_session_start,
-    "session-end":     hook_session_end,
-    "subagent-start":  hook_subagent_start,
-    "subagent-stop":   hook_subagent_stop,
-    "task-completed":  hook_task_completed,
-    "teammate-idle":   hook_teammate_idle,
-    "pretooluse-task": hook_pretooluse_task,
+    "session-start":    hook_session_start,
+    "session-end":      hook_session_end,
+    "subagent-start":   hook_subagent_start,
+    "subagent-stop":    hook_subagent_stop,
+    "task-completed":   hook_task_completed,
+    "teammate-idle":    hook_teammate_idle,
+    "pretooluse-task":  hook_pretooluse_task,
+    "pretooluse-bash":  hook_pretooluse_bash,
+    "pretooluse-read":  hook_pretooluse_read,
 }
 
 

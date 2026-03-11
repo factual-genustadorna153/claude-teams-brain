@@ -116,6 +116,23 @@ echo "==> Syncing to cache: $NEW_CACHE_DIR"
 rsync -a --delete --exclude='.git' "${PLUGIN_SRC}/" "${NEW_CACHE_DIR}/"
 echo "    Sync complete."
 
+# --- 3c. Ensure plugin.json version matches package.json version in cache ---
+python3 - <<PYEOF 2>/dev/null || true
+import json, os
+plugin_json_path = os.path.join("${NEW_CACHE_DIR}", ".claude-plugin", "plugin.json")
+package_json_path = os.path.join("${NEW_CACHE_DIR}", "package.json")
+if os.path.exists(plugin_json_path) and os.path.exists(package_json_path):
+    with open(package_json_path) as f:
+        pkg_version = json.load(f).get("version", "")
+    with open(plugin_json_path) as f:
+        plugin = json.load(f)
+    if pkg_version and plugin.get("version") != pkg_version:
+        plugin["version"] = pkg_version
+        with open(plugin_json_path, "w") as f:
+            json.dump(plugin, f, indent=2)
+        print(f"    Patched plugin.json version to {pkg_version}")
+PYEOF
+
 # --- 3b. Remove old version directories ---
 echo "==> Cleaning up old versions..."
 for old_dir in "${CACHE_BASE}"/*/; do
