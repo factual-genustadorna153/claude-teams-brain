@@ -116,6 +116,16 @@ echo "==> Syncing to cache: $NEW_CACHE_DIR"
 rsync -a --delete --exclude='.git' "${PLUGIN_SRC}/" "${NEW_CACHE_DIR}/"
 echo "    Sync complete."
 
+# --- 3b. Remove old version directories ---
+echo "==> Cleaning up old versions..."
+for old_dir in "${CACHE_BASE}"/*/; do
+  old_dir="${old_dir%/}"
+  if [ "$old_dir" != "$NEW_CACHE_DIR" ] && [ -d "$old_dir" ]; then
+    rm -rf "$old_dir"
+    echo "    Removed: $(basename "$old_dir")"
+  fi
+done
+
 # --- 4. Update installed_plugins.json with new version and path ---
 # IMPORTANT: Claude Code reads installPath from this file to know which cache dir to load.
 # If this update is skipped or uses the wrong key, the plugin loads the old version after restart.
