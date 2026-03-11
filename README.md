@@ -32,7 +32,7 @@ In Claude Code, run:
 /plugin install claude-teams-brain@claude-teams-brain
 ```
 
-> **If `/plugin install` fails with "Source path does not exist":** This is a known Claude Code bug — `/plugin marketplace add` registers the marketplace but doesn't clone the repo to disk. Fix it by running the bootstrap script first:
+> **If `/plugin install` fails with "Source path does not exist":** This is a known Claude Code bug — `/plugin marketplace add` registers the marketplace but doesn't clone the repo to disk. Fix it by opening a **regular terminal** (Terminal, iTerm2, PowerShell, or WSL — not inside Claude Code) and running:
 >
 > ```bash
 > bash <(curl -fsSL https://raw.githubusercontent.com/Gr122lyBr/claude-teams-brain/master/scripts/install.sh)
@@ -257,7 +257,9 @@ The teammate starts with full context from day one.
 /brain-update
 ```
 
-If you are on an older version, or if the update fails with a "Source path does not exist" error, run the bootstrap script instead:
+If you are on an older version, or if the update fails with a "Source path does not exist" error, run the bootstrap script instead.
+
+**Run this in your terminal** (not inside Claude Code — open a regular terminal like Terminal, iTerm2, PowerShell, or WSL):
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Gr122lyBr/claude-teams-brain/master/scripts/install.sh)
@@ -424,7 +426,7 @@ Each project has its own isolated brain. Memory never crosses project boundaries
 
 **Cause:** Claude Code's `/plugin marketplace add` registers the marketplace in `known_marketplaces.json` but does not clone the repo to disk. The installer then can't find the source files.
 
-**Fix:** Run the bootstrap script, which clones the repo to the correct location and patches `known_marketplaces.json`:
+**Fix:** Open a **regular terminal** (Terminal, iTerm2, PowerShell, or WSL — not inside Claude Code) and run the bootstrap script:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Gr122lyBr/claude-teams-brain/master/scripts/install.sh)
