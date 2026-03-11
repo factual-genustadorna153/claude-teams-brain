@@ -27,13 +27,14 @@ const CACHE_TTL_MS = 60_000;
 
 function runCached(command, timeout) {
   const now = Date.now();
-  const cached = commandCache.get(command);
+  const cacheKey = `${command}::${timeout}`;
+  const cached = commandCache.get(cacheKey);
   if (cached && (now - cached.ts) < CACHE_TTL_MS) {
     sessionStats.cacheHits += 1;
     return { ...cached.result, fromCache: true };
   }
   const result = runShell(command, timeout);
-  commandCache.set(command, { result, ts: now });
+  commandCache.set(cacheKey, { result, ts: now });
   return result;
 }
 
@@ -73,7 +74,7 @@ function formatSearchResults(allResults) {
   const seen = new Set();
   const parts = [];
   for (const r of allResults) {
-    const key = r.title + r.snippet;
+    const key = (r.source ?? '') + '::' + (r.title ?? '') + '::' + (r.snippet ?? '').slice(0, 200);
     if (seen.has(key)) continue;
     seen.add(key);
     parts.push(`### ${r.title}\n_Source: ${r.source}_\n${r.snippet}`);
@@ -161,7 +162,12 @@ async function handleBatchExecute({ commands, queries, timeout = 60000 }) {
     cacheInfo.push(result.fromCache ? `${c.label}:cached` : `${c.label}:fresh`);
   }
 
-  const combinedOutput = parts.join('\n');
+  // Cap combined output at 2MB before indexing to prevent memory spikes
+  const MAX_COMBINED = 2 * 1024 * 1024;
+  let combinedOutput = parts.join('\n');
+  if (combinedOutput.length > MAX_COMBINED) {
+    combinedOutput = combinedOutput.slice(0, MAX_COMBINED) + '\n...[output truncated at 2MB]';
+  }
   const source = `batch:${commands.map(c => c.label).join(',')}`.slice(0, 80);
 
   const indexed = indexContent(combinedOutput, source);
@@ -230,7 +236,7 @@ function handleStats() {
     `Cache hits: ${sessionStats.cacheHits}`,
     `Returned to context: ${(sessionStats.bytesReturned / 1024).toFixed(1)}KB`,
     `Indexed (kept out of context): ${(sessionStats.bytesIndexed / 1024).toFixed(1)}KB`,
-    `Context savings ratio: ${ratio}x`,
+    `Context savings ratio: ${ratio}x (${ratio}x more indexed than returned)`,
   ];
   return lines.join('\n');
 }

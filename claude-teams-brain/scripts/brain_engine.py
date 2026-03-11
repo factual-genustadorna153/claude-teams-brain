@@ -302,7 +302,7 @@ def extract_snippet(content, query, max_len=800):
         prefix = "\u2026" if start > 0 else ""
         suffix = "\u2026" if end < len(content) else ""
         parts.append(prefix + chunk + suffix)
-        total += len(chunk)
+        total += len(chunk) + len(prefix) + len(suffix)
 
     return "\n\n".join(parts)
 
@@ -398,11 +398,19 @@ def kb_search_query(conn, query, limit=5):
 
 
 def score_relevance(text: str, keywords: list) -> int:
-    """Score a text by how many task keywords it contains."""
+    """Score a text by how many task keywords it contains (word-boundary aware)."""
     if not keywords or not text:
         return 0
     t = text.lower()
-    return sum(1 for kw in keywords if kw in t)
+    score = 0
+    for kw in keywords:
+        try:
+            if re.search(r'\b' + re.escape(kw) + r'\b', t):
+                score += 1
+        except re.error:
+            if kw in t:
+                score += 1
+    return score
 
 
 def summarize_large_content(content: str, max_bytes: int = 8000) -> str:
@@ -440,8 +448,10 @@ def summarize_large_content(content: str, max_bytes: int = 8000) -> str:
             important.append(line)
 
     result = '\n'.join(important)
-    if len(result.encode('utf-8')) > max_bytes:
-        result = result[:max_bytes] + '\n...[summarized]'
+    encoded = result.encode('utf-8')
+    if len(encoded) > max_bytes:
+        # Slice bytes then decode safely to avoid splitting multibyte chars
+        result = encoded[:max_bytes].decode('utf-8', errors='ignore') + '\n...[summarized]'
     return result
 
 
@@ -673,7 +683,11 @@ def cmd_query_role(role: str, project_dir: str, task_description: str = ""):
 
     context = "\n".join(lines)
     if len(context) > CONTEXT_BUDGET:
-        context = context[:CONTEXT_BUDGET] + "\n\n_[Truncated — context budget of {} chars reached]_".format(CONTEXT_BUDGET)
+        # Truncate at the last newline before the budget to avoid cutting mid-line
+        cutoff = context.rfind('\n', 0, CONTEXT_BUDGET)
+        if cutoff == -1:
+            cutoff = CONTEXT_BUDGET
+        context = context[:cutoff] + "\n\n_[Truncated — context budget of {} chars reached]_".format(CONTEXT_BUDGET)
 
     print(json.dumps({"additionalContext": context}))
 
@@ -808,6 +822,7 @@ def cmd_kb_index(args):
         total_bytes += b
         inserted += 1
     conn.commit()
+    conn.close()
 
     print(json.dumps({"source": source, "chunks": inserted, "bytes": total_bytes}))
 
@@ -826,6 +841,7 @@ def cmd_kb_search(args):
         snippet = extract_snippet(content, query, max_len=800)
         results.append({"title": title, "source": source, "snippet": snippet})
 
+    conn.close()
     print(json.dumps(results))
 
 
@@ -834,6 +850,7 @@ def cmd_kb_stats(args):
     project_dir = args[0]
     conn = get_conn(project_dir)
     row = conn.execute("SELECT COUNT(*), COALESCE(SUM(bytes),0), COUNT(DISTINCT source) FROM kb_chunks").fetchone()
+    conn.close()
     print(json.dumps({"chunks": row[0], "bytes_indexed": row[1], "sources": row[2]}))
 
 
