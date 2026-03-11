@@ -23,37 +23,74 @@ When creating a team, the brain works automatically. Just spawn your team normal
 ```
 Create an agent team. Spawn three teammates:
 - backend: implement the API endpoints
-- frontend: build the React components  
+- frontend: build the React components
 - tests: write integration tests
 ```
 
-Each teammate will automatically receive:
-1. Their past work history (tasks they've done before in this project)
+Each teammate automatically receives:
+1. Their past work history (tasks completed in this project)
 2. Key decisions the team has made across all sessions
 3. Files they've previously worked on
+4. Project conventions and rules
 
 ## Tips for better memory
-- Use descriptive agent names that match their role (e.g., `backend`, `database`, `security`)
-- Let tasks complete naturally so TaskCompleted hook fires
-- The brain gets richer with each session — first run is cold, second run onwards gets context
+- Use descriptive agent names matching their role (`backend`, `database`, `security`)
+- Let tasks complete naturally so the TaskCompleted hook fires and indexes the work
+- The brain gets richer every session — first run is cold, second run onwards gets context
+- Use `/brain-remember <rule>` to manually inject rules into every future teammate
 
-## MCP Tools
+## What gets auto-indexed at session start
+Every session, the brain automatically indexes into the KB:
+- **CLAUDE.md** — project instructions
+- **Git log** — last 20 commits
+- **Directory tree** — project structure
+- **Config files** — package.json, requirements.txt, go.mod, etc.
+- **Convention files** — CONVENTIONS.md, AGENTS.md, .cursorrules
+- **Stack conventions** — auto-detected and seeded on first session (Next.js, FastAPI, Go, etc.)
 
-claude-teams-brain exposes five MCP tools that teammates can use to manage context efficiently:
+## MCP Tools for teammates
+
+Teammates have five MCP tools to keep output out of their context window:
 
 | Tool | When to use |
 |------|-------------|
-| `mcp__claude-teams-brain__batch_execute` | Run multiple shell commands in one call. Output is auto-indexed and searched. Use instead of raw Bash for large output. |
-| `mcp__claude-teams-brain__search` | Query the session knowledge base after batch_execute for follow-up details. |
-| `mcp__claude-teams-brain__index` | Manually save findings, analysis, or data for later retrieval by you or teammates. |
-| `mcp__claude-teams-brain__execute` | Run shell, JavaScript, or Python code in a sandbox. Set `intent` to auto-filter large output. |
-| `mcp__claude-teams-brain__stats` | Check session metrics: bytes indexed vs bytes returned to context. |
+| `batch_execute` | **Default for shell commands.** Run 2+ commands in one call; all output auto-indexed and searchable. Always include `queries`. |
+| `search` | Follow-up queries against already-indexed output — no commands re-run. |
+| `index` | Manually store findings or analysis for yourself and teammates. |
+| `execute` | Single command/script. Set `intent` for large output — auto-indexes instead of returning raw. |
+| `stats` | Check bytes indexed vs returned; verify context savings. |
 
-These tools are automatically available to all Task subagents. The PreToolUse hook injects usage instructions into every teammate prompt.
+### Standard workflow for teammates
+
+```
+1. batch_execute(commands=[...], queries=["what I need to know"])
+   → runs commands, indexes all output, returns search results
+
+2. search(queries=["follow-up question"])
+   → searches indexed KB without re-running anything
+
+3. index(content="key finding", source="my-analysis")
+   → saves conclusion for teammates to search
+```
+
+All teammates share the same session KB — one teammate's indexed output is searchable by others.
+
+### Example batch_execute call
+
+```json
+{
+  "commands": [
+    {"label": "tests", "command": "npm test 2>&1"},
+    {"label": "git-log", "command": "git log --oneline -20"},
+    {"label": "deps", "command": "npm list --depth=0"}
+  ],
+  "queries": ["failing tests", "recent auth changes", "outdated packages"]
+}
+```
 
 ## Memory location
-All data is stored locally at `~/.claude-teams-brain/projects/<project-hash>/brain.db`
-Never sent anywhere. Fully offline. SQLite format — inspectable with any SQLite viewer.
+All data stored locally at `~/.claude-teams-brain/projects/<project-hash>/brain.db`
+Never sent anywhere. Fully offline. SQLite — inspectable with any SQLite viewer.
 
 ## Resetting
 Use `/brain-clear` to wipe memory for this project and start fresh.

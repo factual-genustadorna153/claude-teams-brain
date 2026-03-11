@@ -8,11 +8,11 @@ user_invocable: true
 
 # brain-stats
 
-Show a full stats summary for persistent memory and the current session KB.
+Show a full stats summary for persistent memory, the current session KB, and per-role activity.
 
 ## Instructions
 
-Step 1 — Brain stats:
+Step 1 — Persistent brain stats:
 ```
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/brain_engine.py status "$CLAUDE_PROJECT_DIR"
 ```
@@ -20,6 +20,11 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/brain_engine.py status "$CLAUDE_PROJECT_DI
 Step 2 — Session KB stats:
 ```
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/brain_engine.py kb-stats "$CLAUDE_PROJECT_DIR"
+```
+
+Step 3 — Per-role breakdown:
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/brain_engine.py role-stats "$CLAUDE_PROJECT_DIR"
 ```
 
 Display as a clean summary:
@@ -37,7 +42,19 @@ Display as a clean summary:
 ### Session Knowledge Base
 - Chunks indexed: X
 - Data indexed: XKB
-- Sources: X
+- Sources: X (CLAUDE.md, git-log, batch_execute output, ...)
+
+### Per-Role Breakdown
+- backend: X tasks · X files (last active: <date>)
+- frontend: X tasks · X files (last active: <date>)
 ```
 
-If the brain is empty, encourage the user to run an Agent Team session or use `/brain-remember` to add facts manually.
+## Interpreting the numbers
+
+- **Tasks indexed** — completed tasks stored; grows each session
+- **Decisions captured** — architectural choices extracted from transcripts, tagged by type (architecture/dependency/convention/pattern/tooling)
+- **Files tracked** — distinct files agents have written or edited
+- **Session KB chunks** — indexed output from this session's MCP tool calls; agents can search it with `search()`
+- **Per-role** — which roles have the most accumulated memory; roles with 0 tasks get no context injection
+
+If the brain is empty, encourage running an Agent Team session or using `/brain-remember` to seed initial conventions.

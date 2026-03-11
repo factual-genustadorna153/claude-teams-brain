@@ -300,14 +300,28 @@ def warmup(project_dir):
 
 TOOL_GUIDANCE = """\
 ## Token-Efficient Tools (claude-teams-brain)
-Prefer these MCP tools over direct Bash calls to minimise context usage:
-- `batch_execute` — run multiple shell commands in a single call; all output is auto-indexed and searchable
-- `execute` — run a single command with automatic output indexing
-- `search` — query indexed output instead of re-running commands
-- `index` — store any content in the session knowledge base for later retrieval
-- `stats` — view token savings and call counts for this session
 
-Always prefer `batch_execute` when issuing more than one shell command."""
+You have five MCP tools that keep large output OUT of your context window. Use them instead of Bash whenever output could be large.
+
+**`batch_execute`** — default for shell commands
+- Use for 2+ commands; all output auto-indexed, never floods context
+- Always include `queries` to immediately search indexed output
+- Example: `batch_execute(commands=[{"label":"tests","command":"npm test"},{"label":"log","command":"git log --oneline -20"}], queries=["failing tests","recent changes"])`
+
+**`execute`** — single command or code snippet
+- Set `intent` when output may be large — auto-indexes and searches instead of returning raw output
+- Example: `execute(language="python", code="...", intent="find all class definitions")`
+
+**`search`** — query already-indexed output without re-running commands
+- Example: `search(queries=["auth middleware","error handling"])`
+
+**`index`** — save findings for yourself and teammates
+- Example: `index(content="Auth uses RS256 JWT, 15min expiry", source="auth-analysis")`
+
+**`stats`** — check context savings at end of investigation
+
+Standard workflow: `batch_execute` → `search` → `index`
+All teammates share the same session KB — index once, any teammate can search it."""
 
 # Role keyword mapping for inference
 ROLE_KEYWORDS = {
