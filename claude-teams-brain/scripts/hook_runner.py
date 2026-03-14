@@ -311,7 +311,7 @@ def warmup(project_dir):
 TOOL_GUIDANCE = """\
 ## Token-Efficient Tools (claude-teams-brain)
 
-You have five MCP tools that keep large output OUT of your context window. Use them instead of Bash whenever output could be large.
+You have five MCP tools that keep large output OUT of your context window. **You MUST use these instead of Bash** for any command that may produce more than a few lines of output. Bash is only for short, safe commands (git status, mkdir, pip install, etc.). Large-output Bash commands will be **automatically blocked** by PreToolUse hooks.
 
 **`batch_execute`** — default for shell commands
 - Use for 2+ commands; all output auto-indexed, never floods context
@@ -715,31 +715,111 @@ def hook_pretooluse_task(data):
         emit_context("PreToolUse", context)
 
 
-# Commands that tend to produce large output — worth redirecting to brain tools
-_LARGE_OUTPUT_CMDS = [
-    "npm test", "npm run", "yarn test", "yarn run", "pnpm test", "pnpm run",
-    "pytest", "jest", "vitest", "cargo test", "go test",
+# ── PreToolUse: Smart MCP routing ─────────────────────────────────────────────
+#
+# Three tiers:
+#   ALLOW  — small/safe commands, no message
+#   BLOCK  — large-output commands, exit 2 to redirect to MCP tools
+#   TIP    — everything else, gentle reminder (additionalContext)
+
+# Commands that produce minimal output — always allow silently
+_SAFE_CMDS = [
+    "git status", "git add", "git commit", "git push", "git pull",
+    "git checkout", "git branch", "git stash", "git merge", "git rebase",
+    "git fetch", "git remote", "git tag", "git init", "git clone",
+    "git config", "git rev-parse", "git symbolic-ref",
+    "pwd", "ls", "mkdir", "rmdir", "cp ", "mv ", "rm ", "touch ",
+    "chmod", "chown", "ln ",
+    "echo ", "printf ", "which ", "type ", "whereis", "whoami",
+    "cd ", "source ", "export ",
+    "pip install", "npm install", "npm ci", "yarn add", "yarn install",
+    "pnpm install", "pnpm add",
+    "node -v", "python3 -v", "python3 --version", "npm -v",
+    "py_compile", "python3 -c \"import py_compile",
+    "true", "false", "exit",
+]
+
+# Commands that produce large/unpredictable output — block and redirect to MCP
+_BLOCK_CMDS = [
+    # Test runners
+    "npm test", "npm run test", "yarn test", "pnpm test",
+    "pytest", "jest ", "vitest", "mocha", "cargo test", "go test",
+    # Search tools (should use Grep/Glob built-in tools or MCP execute)
+    "grep ", "grep\t", "rg ", "ripgrep", "find ", "find\t",
+    "ack ", "ag ",
+    # File reading (should use Read tool or MCP execute)
+    "cat ", "cat\t", "head ", "tail ", "less ", "more ",
+    # Git large-output commands
     "git log", "git diff", "git show", "git blame",
-    "grep", "rg ", "ripgrep", "find ",
-    "cat ", "head ", "tail ",
-    "docker", "kubectl", "helm",
-    "pip list", "npm list", "yarn list",
+    # Infrastructure
+    "docker logs", "docker ps", "kubectl get", "kubectl describe",
+    "kubectl logs", "helm list",
+    # Package listing
+    "pip list", "pip freeze", "npm list", "npm ls", "yarn list",
+    # System info
     "ps aux", "netstat", "lsof", "df ", "du ",
 ]
+
+# Redirect messages per command category
+_REDIRECT_MSG = {
+    "grep":     "Use the Grep tool or `execute(intent=\"...\")` instead.",
+    "rg ":      "Use the Grep tool or `execute(intent=\"...\")` instead.",
+    "ack ":     "Use the Grep tool or `execute(intent=\"...\")` instead.",
+    "ag ":      "Use the Grep tool or `execute(intent=\"...\")` instead.",
+    "find ":    "Use the Glob tool or `execute(intent=\"...\")` instead.",
+    "cat ":     "Use the Read tool or `execute(intent=\"...\")` instead.",
+    "head ":    "Use the Read tool (with offset/limit) instead.",
+    "tail ":    "Use the Read tool (with offset/limit) instead.",
+    "git log":  "Use `execute(language=\"shell\", code=\"git log ...\", intent=\"...\")` instead.",
+    "git diff": "Use `execute(language=\"shell\", code=\"git diff ...\", intent=\"...\")` instead.",
+}
+
+
+def _emit_block(reason):
+    """Block a tool call: print reason to stderr and exit 2."""
+    import sys as _sys
+    print(reason, file=_sys.stderr)
+    _sys.exit(2)
 
 
 def hook_pretooluse_bash(data):
     tool_input = data.get("tool_input", {}) or {}
-    command = (tool_input.get("command", "") or "").lower()
+    command = (tool_input.get("command", "") or "").strip()
     if not command:
         return
 
-    if any(pat in command for pat in _LARGE_OUTPUT_CMDS):
-        emit_context("PreToolUse", (
-            "💡 brain tip: This command may produce large output. "
-            "Use `batch_execute` (2+ commands) or `execute(intent=\"...\")` (1 command) "
-            "— output is auto-indexed, only relevant snippets enter context."
-        ))
+    cmd_lower = command.lower()
+
+    # Tier 1: Safe commands — allow silently
+    if any(cmd_lower.startswith(safe) or safe in cmd_lower for safe in _SAFE_CMDS):
+        return
+
+    # Tier 2: Large-output commands — block and redirect to MCP
+    for pattern in _BLOCK_CMDS:
+        if pattern in cmd_lower:
+            # Find specific redirect message, or use generic
+            redirect = None
+            for key, msg in _REDIRECT_MSG.items():
+                if key in cmd_lower:
+                    redirect = msg
+                    break
+            if not redirect:
+                redirect = (
+                    "Use `batch_execute` (2+ commands) or "
+                    "`execute(language=\"shell\", code=\"...\", intent=\"...\")` (1 command)."
+                )
+            _emit_block(
+                f"⛔ BLOCKED: This command may produce large output that floods context. "
+                f"{redirect} "
+                f"Output is auto-indexed and only relevant snippets enter your context window."
+            )
+            return  # _emit_block exits, but just in case
+
+    # Tier 3: Unknown commands — allow with reminder
+    emit_context("PreToolUse", (
+        "REMINDER: Prefer brain MCP tools over Bash for commands with unpredictable output size. "
+        "Use `execute(intent=\"...\")` for auto-indexing, or `batch_execute` for multiple commands."
+    ))
 
 
 def hook_pretooluse_read(data):
@@ -752,9 +832,26 @@ def hook_pretooluse_read(data):
         return
 
     emit_context("PreToolUse", (
-        "💡 brain tip: For large files use "
-        "`execute(language=\"shell\", code=\"cat <file>\", intent=\"what you need\")` "
-        "— auto-indexes content, only relevant snippets enter context."
+        "CONTEXT TIP: If this file is large (>50 lines), prefer "
+        "`mcp__context-mode__execute_file(path, language, code)` "
+        "— processes in sandbox, only stdout enters context."
+    ))
+
+
+def hook_pretooluse_grep(data):
+    """Redirect Grep tool usage to MCP execute for large result sets."""
+    tool_input = data.get("tool_input", {}) or {}
+    output_mode = tool_input.get("output_mode", "files_with_matches")
+    head_limit = tool_input.get("head_limit", 0)
+
+    # If output is already constrained (files_with_matches or has head_limit), allow
+    if output_mode == "files_with_matches" or (head_limit and head_limit <= 20):
+        return
+
+    emit_context("PreToolUse", (
+        "CONTEXT TIP: If results may be large, prefer "
+        "`mcp__context-mode__execute(language: \"shell\", code: \"grep ...\")` "
+        "— runs in sandbox, only stdout enters context."
     ))
 
 
@@ -770,6 +867,7 @@ HANDLERS = {
     "pretooluse-task":  hook_pretooluse_task,
     "pretooluse-bash":  hook_pretooluse_bash,
     "pretooluse-read":  hook_pretooluse_read,
+    "pretooluse-grep":  hook_pretooluse_grep,
 }
 
 

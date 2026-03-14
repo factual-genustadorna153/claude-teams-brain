@@ -377,39 +377,121 @@ def chunk_content(content, source):
     return chunks
 
 
+# Sources that are refreshed each session or intentionally permanent — never decay
+EVERGREEN_SOURCES = frozenset({
+    'CLAUDE.md', 'remember', 'dir-tree', 'git-log', 'config-files',
+})
+# Sources that change slowly — decay at half rate
+SLOW_DECAY_SOURCES = frozenset({
+    'decisions', 'git-learn-coupling', 'git-learn-hotspots',
+})
+
+
+def freshness_weight(indexed_at_str: str, source: str = '') -> float:
+    """Return a multiplier (0.0–1.0) based on entry age and source type.
+
+    Evergreen sources (user memories, session-refreshed content) always return 1.0.
+    Slow-decay sources (decisions, learned patterns) decay at half rate.
+    Everything else (command output, manual index entries) decays normally.
+
+    Backward compatible: if indexed_at is missing or unparseable, returns 0.8
+    (slight penalty for unknown age rather than silent full weight).
+    """
+    # Evergreen: never decay
+    if source in EVERGREEN_SOURCES or source.startswith('seed-'):
+        return 1.0
+
+    if not indexed_at_str:
+        return 0.8
+
+    try:
+        dt = datetime.fromisoformat(indexed_at_str.replace('Z', '+00:00'))
+        age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+    except Exception:
+        return 0.8  # Unparseable timestamp — slight penalty
+
+    # Slow-decay sources get half the age effect
+    if source in SLOW_DECAY_SOURCES or source.startswith('git-learn'):
+        age_days = age_days * 0.5
+
+    if age_days <= 1:
+        return 1.0
+    elif age_days <= 7:
+        return 0.95
+    elif age_days <= 30:
+        return 0.85
+    elif age_days <= 90:
+        return 0.65
+    else:
+        return 0.4
+
+
+def _rerank_with_freshness(rows, limit):
+    """Re-rank FTS results by applying freshness decay to BM25 scores.
+
+    Each row is expected to be (title, content, source, indexed_at, fts_rank).
+    FTS5 rank is negative (more negative = better match), so multiplying by
+    a decay factor < 1.0 moves the score closer to 0 (correctly demotes).
+
+    Returns rows trimmed back to (title, content, source) for backward compat.
+    """
+    if not rows:
+        return rows
+
+    scored = []
+    for row in rows:
+        title, content, source = row[0], row[1], row[2]
+        indexed_at = row[3] if len(row) > 3 else ''
+        fts_rank = row[4] if len(row) > 4 else -1.0
+        weight = freshness_weight(indexed_at or '', source or '')
+        adjusted = fts_rank * weight
+        scored.append((adjusted, title, content, source))
+
+    scored.sort(key=lambda x: x[0])  # Most negative first = best match
+    return [(s[1], s[2], s[3]) for s in scored[:limit]]
+
+
 def kb_search_query(conn, query, limit=5):
-    """Three-layer search against kb_fts."""
+    """Three-layer search against kb_fts with freshness-aware re-ranking."""
+    fetch_limit = max(limit * 3, 15)  # Over-fetch to allow re-ranking
+
     # Layer 1: Porter stemming
     try:
         rows = conn.execute(
-            "SELECT kc.title, kc.content, kc.source FROM kb_fts kf JOIN kb_chunks kc ON kf.chunk_id = kc.id WHERE kb_fts MATCH ? ORDER BY rank LIMIT ?",
-            (query, limit)
+            "SELECT kc.title, kc.content, kc.source, kc.indexed_at, kf.rank "
+            "FROM kb_fts kf JOIN kb_chunks kc ON kf.chunk_id = kc.id "
+            "WHERE kb_fts MATCH ? ORDER BY rank LIMIT ?",
+            (query, fetch_limit)
         ).fetchall()
         if rows:
-            return rows
+            return _rerank_with_freshness(rows, limit)
     except Exception:
         pass
 
     # Layer 2: Trigram
     try:
         rows = conn.execute(
-            "SELECT kc.title, kc.content, kc.source FROM kb_fts_trigram kf JOIN kb_chunks kc ON kf.chunk_id = kc.id WHERE kb_fts_trigram MATCH ? ORDER BY rank LIMIT ?",
-            (query, limit)
+            "SELECT kc.title, kc.content, kc.source, kc.indexed_at, kf.rank "
+            "FROM kb_fts_trigram kf JOIN kb_chunks kc ON kf.chunk_id = kc.id "
+            "WHERE kb_fts_trigram MATCH ? ORDER BY rank LIMIT ?",
+            (query, fetch_limit)
         ).fetchall()
         if rows:
-            return rows
+            return _rerank_with_freshness(rows, limit)
     except Exception:
         pass
 
-    # Layer 3: Word-by-word
+    # Layer 3: Word-by-word (no FTS rank available — use indexed_at for ordering)
     results, seen = [], set()
     for word in query.lower().split():
         if len(word) <= 3:
             continue
         try:
             rows = conn.execute(
-                "SELECT kc.title, kc.content, kc.source FROM kb_fts kf JOIN kb_chunks kc ON kf.chunk_id = kc.id WHERE kb_fts MATCH ? ORDER BY rank LIMIT ?",
-                (word, limit)
+                "SELECT kc.title, kc.content, kc.source, kc.indexed_at, kf.rank "
+                "FROM kb_fts kf JOIN kb_chunks kc ON kf.chunk_id = kc.id "
+                "WHERE kb_fts MATCH ? ORDER BY rank LIMIT ?",
+                (word, fetch_limit)
             ).fetchall()
             for row in rows:
                 if row[1] not in seen:
@@ -417,11 +499,11 @@ def kb_search_query(conn, query, limit=5):
                     results.append(row)
         except Exception:
             pass
-    return results[:limit]
+    return _rerank_with_freshness(results, limit) if results else []
 
 
 def score_relevance(text: str, keywords: list, completed_at: str = '') -> int:
-    """Score a text by keyword matches (word-boundary aware) with recency boost."""
+    """Score a text by keyword matches (word-boundary aware) with recency boost/penalty."""
     if not keywords or not text:
         return 0
     t = text.lower()
@@ -434,10 +516,9 @@ def score_relevance(text: str, keywords: list, completed_at: str = '') -> int:
             if kw in t:
                 score += 1
 
-    # Recency boost: +2 for last 7 days, +1 for last 30 days
+    # Recency: boost recent entries, penalize stale ones
     if completed_at:
         try:
-            from datetime import datetime, timezone, timedelta
             dt = datetime.fromisoformat(completed_at.replace('Z', '+00:00'))
             now = datetime.now(timezone.utc)
             age = (now - dt).days
@@ -445,6 +526,10 @@ def score_relevance(text: str, keywords: list, completed_at: str = '') -> int:
                 score += 2
             elif age <= 30:
                 score += 1
+            elif age > 90:
+                score -= 1
+            if age > 180:
+                score -= 1  # Cumulative: -2 total for >180 days
         except Exception:
             pass
     return score

@@ -35,3 +35,4 @@ demo/record-demo.sh
 .vscode/
 *.swp
 *.swo
+__pycache__/

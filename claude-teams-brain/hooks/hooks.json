@@ -85,6 +85,16 @@
             "timeout": 3
           }
         ]
+      },
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py pretooluse-grep",
+            "timeout": 3
+          }
+        ]
       }
     ],
     "SessionEnd": [
