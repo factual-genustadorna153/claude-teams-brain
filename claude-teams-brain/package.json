@@ -1,7 +1,7 @@
 {
   "name": "claude-teams-brain",
   "version": "1.8.0",
-  "description": "Persistent cross-session memory for Claude Code Agent Teams",
+  "description": "Token-efficient tools and persistent memory for Claude Code — save 90%+ tokens, smarter agents every session",
   "type": "module",
   "main": "start.mjs",
   "engines": {
