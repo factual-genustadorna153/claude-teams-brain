@@ -104,17 +104,136 @@ DECISION_KEYWORDS = [
 
 
 def extract_decisions_from_text(text, max_chars=500):
-    """Extract decision-like lines from text using expanded keyword matching."""
+    """Extract decision-like lines from text using keyword matching + noise filtering."""
     decisions = []
     for line in text.split("\n"):
         lc = line.lower().strip()
         if not lc or len(lc) < 10:
             continue
+
+        # ── Noise rejection (before keyword check) ──
+        # Skip lines that are narration/thinking, not actual decisions
+        if any(noise in lc for noise in [
+            'let me ', 'i will ', "i'll check", "i'll look", "i'll read",
+            'now let me', 'let me analyze', 'let me check',
+            'i now have', 'i can see', 'i need to',
+            'good.', 'perfect.', 'great.',
+            'here is', 'here are', 'here\'s',
+            'test pass', 'test fail', 'pass —', 'fail —',
+            'the function', 'the test', 'the file',
+            'expect decisions', 'expect like',
+            'before inserting', 'after inserting',
+            'lines ', 'line ', 'row ', 'column ',
+            '```', '# expect', 'todo:', 'fixme:',
+        ]):
+            continue
+        # Skip lines that start with markdown or bullet formatting typical of narration
+        if lc.startswith(('- **', '- *', '> ', 'note:', '```')):
+            # But allow "- decided to..." style bullets
+            if not any(kw in lc for kw in ['decided', 'chose', 'convention:', 'rule:']):
+                continue
+        # Skip very long lines (likely paragraphs of explanation, not concise decisions)
+        if len(lc) > 300:
+            continue
+
+        # ── Keyword check ──
         if any(kw in lc for kw in DECISION_KEYWORDS):
             clean = line.strip()[:max_chars]
             if clean and clean not in decisions:
                 decisions.append(clean)
     return decisions
+
+
+def extract_agent_info_from_transcript(transcript_path):
+    """Extract agent name and description from the parent conversation transcript.
+
+    Returns (name, description) tuple. Either may be empty string.
+    """
+    try:
+        tp = Path(transcript_path)
+        if not tp.exists() or 'subagents' not in str(tp):
+            return "", ""
+
+        agent_id = tp.stem.replace("agent-", "")
+        if not agent_id:
+            return "", ""
+
+        session_dir = tp.parent.parent
+        parent_file = session_dir.parent / (session_dir.name + ".jsonl")
+
+        if not parent_file.exists():
+            return "", ""
+
+        agent_tool_uses = {}  # tool_use_id -> (name, description)
+        with open(parent_file, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                msg = entry.get("message", {})
+                for block in (msg.get("content") or []):
+                    if not isinstance(block, dict):
+                        continue
+                    if (block.get("type") == "tool_use"
+                            and block.get("name") == "Agent"):
+                        inp = block.get("input", {})
+                        name = inp.get("name", "")
+                        desc = inp.get("description", "") or inp.get("prompt", "")[:80]
+                        tid = block.get("id", "")
+                        if tid:
+                            agent_tool_uses[tid] = (name, desc)
+                    if block.get("type") == "tool_result":
+                        content = str(block.get("content", ""))
+                        if agent_id in content:
+                            tid = block.get("tool_use_id", "")
+                            if tid in agent_tool_uses:
+                                return agent_tool_uses[tid]
+    except Exception:
+        pass
+    return "", ""
+
+
+def extract_subject_from_text(text, agent_name="", max_len=80):
+    """Extract a meaningful one-line subject from output text."""
+    if not text:
+        return f"Work by {agent_name}" if agent_name else "Unknown task"
+
+    # Preamble patterns — generic intro lines, not actual content
+    _SKIP_STARTS = (
+        'here is', 'here are', "here's", 'research complete',
+        'summary of', 'a summary', 'the following', 'below is',
+        'i have', "i've", 'let me', 'all done', 'all three',
+        'all edits', 'findings have been', 'complete.', 'done.',
+        'the file has been', 'the file compiles',
+        'perfect', 'great', 'good.', 'ok.',
+    )
+
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line or line in ('---', '```', '**', '##'):
+            continue
+        clean = line.lstrip('#').lstrip('*').strip().rstrip('*').strip()
+        if len(clean) < 10:
+            continue
+        # Skip file paths
+        if clean.startswith('/') and '/' in clean[1:] and ' ' not in clean:
+            continue
+        # Skip generic preamble
+        if any(clean.lower().startswith(p) for p in _SKIP_STARTS):
+            continue
+        if len(clean) > max_len:
+            clean = clean[:max_len-3] + '...'
+        return clean
+
+    # Fallback: first 80 chars of text
+    flat = ' '.join(text.split()[:15])
+    if len(flat) > max_len:
+        flat = flat[:max_len-3] + '...'
+    return flat or f"Work by {agent_name}"
 
 
 def extract_decisions_llm(text: str, timeout: int = 8) -> list:
@@ -339,7 +458,30 @@ You have five MCP tools that keep large output OUT of your context window. **You
 **`stats`** — check context savings at end of investigation
 
 Standard workflow: `batch_execute` → `search` → `index`
-All teammates share the same session KB — index once, any teammate can search it."""
+All teammates share the same session KB — index once, any teammate can search it.
+
+## Knowledge Capture (IMPORTANT)
+
+Before finishing your work, **you MUST `index` your key findings** so future teammates benefit. Index things that would help someone working on this codebase tomorrow:
+
+**What to index:**
+- Architectural decisions: "Decided to use X because Y"
+- Conventions discovered: "This codebase uses pattern X for Y"
+- Gotchas and pitfalls: "Don't do X because Y will break"
+- API contracts: "Endpoint X expects Y, returns Z"
+- Dependencies between components: "Changing X requires updating Y"
+- Test strategies: "Module X is tested via Y, mock Z"
+- Performance notes: "X is slow because Y, consider Z"
+
+**What NOT to index:**
+- Raw command output (already auto-indexed by batch_execute)
+- Step-by-step narration of what you did
+- Obvious facts derivable from reading the code
+- Temporary debugging notes
+
+**Format:** Write concise, factual statements. Lead with the topic.
+- Good: `index(content="Auth: uses RS256 JWT with 15min expiry. Refresh tokens stored in HttpOnly cookies. Rate limited to 5 attempts/min.", source="auth-architecture")`
+- Bad: `index(content="I looked at the auth code and found that it seems to use JWT tokens.", source="notes")`"""
 
 # Role keyword mapping for inference
 ROLE_KEYWORDS = {
@@ -350,6 +492,15 @@ ROLE_KEYWORDS = {
     'devops':    ['docker', 'kubernetes', 'deploy', 'pipeline', 'ci/cd', 'nginx', 'github action', 'terraform'],
     'security':  ['auth', 'jwt', 'oauth', 'permission', 'encrypt', 'hash', 'csrf', 'xss', 'vulnerab'],
     'architect': ['architecture', 'design', 'refactor', 'structure', 'pattern', 'monolith', 'microservice'],
+}
+
+# Map Claude Code's internal subagent types to meaningful role names
+SYSTEM_AGENT_MAP = {
+    'general-purpose': '',  # empty = infer from content
+    'explore': '',
+    'plan': 'architect',
+    'claude-code-guide': 'docs',
+    'unknown': '',
 }
 
 
@@ -508,14 +659,27 @@ def hook_session_end(data):
 
 def hook_subagent_start(data):
     project_dir = get_project_dir()
-    agent_type = (data.get("agent_type", "") or "general").lower().strip() or "general"
+
+    # Log available fields for debugging
+    print(f"[claude-teams-brain] SubagentStart fields: {list(data.keys())}", file=sys.stderr)
+
+    # Try custom name first, fall back to system agent_type
+    agent_type = (
+        data.get("agent_name", "")
+        or data.get("name", "")
+        or data.get("teammate_name", "")
+        or data.get("agent_type", "")
+        or "general"
+    ).lower().strip() or "general"
 
     task_desc = str(
         data.get("prompt") or data.get("task") or
         data.get("description") or data.get("message") or ""
     )[:500]
 
-    # Infer role from task description if agent_type is generic
+    # Map system agent types, then infer from content
+    if agent_type in SYSTEM_AGENT_MAP:
+        agent_type = SYSTEM_AGENT_MAP[agent_type] or agent_type
     agent_type = infer_role(agent_type, task_desc)
 
     context_raw = run_engine("query-role", agent_type, project_dir, task_desc)
@@ -535,7 +699,35 @@ def hook_subagent_start(data):
 
 def hook_subagent_stop(data):
     project_dir = get_project_dir()
-    agent_name = data.get("agent_type", "") or "unknown"
+
+    # Log all available fields for debugging agent name capture
+    print(f"[claude-teams-brain] SubagentStop fields: {list(data.keys())}", file=sys.stderr)
+
+    # Try multiple fields to find the user's custom agent name and description
+    # Priority: explicit name > transcript-derived > agent_type (system fallback)
+    transcript_path_raw = data.get("agent_transcript_path", "") or ""
+    transcript_name, transcript_desc = extract_agent_info_from_transcript(transcript_path_raw) if transcript_path_raw else ("", "")
+
+    agent_name = (
+        data.get("agent_name", "")
+        or data.get("name", "")
+        or data.get("teammate_name", "")
+        or transcript_name
+        or data.get("agent_type", "")
+        or "unknown"
+    )
+    if transcript_name:
+        print(f"[claude-teams-brain] Extracted agent name from transcript: {transcript_name}", file=sys.stderr)
+
+    # Use transcript description first (from Agent() call), then hook data fields
+    agent_desc = str(
+        transcript_desc
+        or data.get("description", "")
+        or data.get("prompt", "")
+        or data.get("task", "")
+        or ""
+    )[:500]
+
     session_id = data.get("session_id", "") or ""
     transcript_path = data.get("agent_transcript_path", "") or ""
     last_message = data.get("last_assistant_message", "") or ""
@@ -597,7 +789,7 @@ def hook_subagent_stop(data):
                                     decisions.append(d)
 
             if last_message:
-                output_summary = last_message[:500]
+                output_summary = last_message[:2000]
             else:
                 for entry in reversed(entries):
                     msg = entry.get("message", {})
@@ -607,7 +799,7 @@ def hook_subagent_stop(data):
                             continue
                         for block in reversed(content_list):
                             if isinstance(block, dict) and block.get("type") == "text":
-                                output_summary = block["text"][:500]
+                                output_summary = block["text"][:2000]
                                 break
                         if output_summary:
                             break
@@ -615,15 +807,24 @@ def hook_subagent_stop(data):
             pass
 
     if not output_summary and last_message:
-        output_summary = last_message[:500]
+        output_summary = last_message[:2000]
 
-    role = (
-        re.sub(r"[-_]?(agent|teammate|worker|bot)$", "", agent_name, flags=re.I).strip()
-        or agent_name
-    )
-    # Infer role if still generic
-    hint = last_message[:500] if last_message else ""
-    role = infer_role(role, hint)
+    # Determine role: use a stable, reusable category for memory routing.
+    # If agent_name is already a known role keyword, use it directly.
+    # Otherwise, always infer from content so task-specific names like
+    # "dashboard-fix" get mapped to "frontend" instead of staying as-is.
+    known_roles = set(ROLE_KEYWORDS.keys())  # backend, frontend, tests, etc.
+    clean_name = re.sub(r"[-_]?(agent|teammate|worker|bot)$", "", agent_name, flags=re.I).strip().lower()
+    if clean_name in known_roles:
+        role = clean_name
+    elif clean_name in SYSTEM_AGENT_MAP:
+        role = SYSTEM_AGENT_MAP[clean_name]
+        hint = (agent_desc or output_summary or last_message or "")[:500]
+        role = infer_role(role, hint)
+    else:
+        # Task-specific name — infer role from content
+        hint = (agent_desc or output_summary or last_message or "")[:500]
+        role = infer_role("", hint)
 
     # Enhance decisions with LLM extraction if API key available
     if output_summary:
@@ -632,16 +833,24 @@ def hook_subagent_stop(data):
             if d not in decisions:
                 decisions.append(d)
 
+    # Filter out noisy decisions from analysis-only agents
+    if agent_name.lower() in ('explore', 'plan', 'claude-code-guide'):
+        # These agents analyze/plan but rarely make binding decisions
+        # Only keep decisions with very strong signal words
+        strong_signals = ['decided to', 'convention:', 'rule:', 'must use', 'always use', 'never use', 'switched to', 'chose to']
+        decisions = [d for d in decisions if any(s in d.lower() for s in strong_signals)]
+
     payload = {
         "project_dir": project_dir,
         "run_id": session_id,
         "session_id": session_id,
-        "task_subject": f"Work by {agent_name}",
+        "task_subject": agent_desc[:80] if agent_desc else extract_subject_from_text(output_summary, agent_name),
         "agent_name": agent_name,
         "agent_role": role,
         "files_touched": files_touched[:50],
         "decisions": decisions[:20],
         "output_summary": output_summary,
+        "confidence": "HIGH" if files_touched else "MEDIUM",
     }
     run_engine("index-task", input_data=json.dumps(payload))
 
@@ -693,6 +902,7 @@ def hook_task_completed(data):
         "files_touched": files_touched,
         "decisions": decisions,
         "output_summary": task_subject,
+        "confidence": "MEDIUM",
     }
     run_engine("index-task", input_data=json.dumps(payload))
 

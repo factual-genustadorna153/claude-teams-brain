@@ -1,15 +1,16 @@
 <p align="center">
-  <img src="assets/logo.png" alt="claude-teams-brain" width="120" />
+  <img src="https://raw.githubusercontent.com/Gr122lyBr/claude-teams-brain/master/claude-teams-brain/assets/logo.png" alt="claude-teams-brain" width="120" />
 </p>
 
 <h1 align="center">claude-teams-brain</h1>
 
 <p align="center">
-  <strong>Persistent memory for Claude Code Agent Teams</strong><br>
-  Your AI teammates remember what they built last session.
+  <strong>Make Claude Code faster, cheaper, and smarter</strong><br>
+  Save 90%+ tokens on command output. Persistent memory across sessions. Works solo or with Agent Teams.
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/claude-teams-brain"><img src="https://img.shields.io/npm/v/claude-teams-brain.svg" alt="npm version" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/python-3.8%2B-blue.svg" alt="Python 3.8+" />
   <img src="https://img.shields.io/badge/node-18%2B-green.svg" alt="Node 18+" />
@@ -18,21 +19,55 @@
 
 ---
 
-## The Problem
+## See It In Action
 
-Agent Teams are powerful — but **ephemeral**. Every teammate spawns blank. Your backend agent spent two hours learning your conventions and building auth. Tomorrow, a new backend agent starts from zero.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Gr122lyBr/claude-teams-brain/master/demo/demo.gif" alt="CLI Plugin in Action" width="700" />
+  <br><em>Token-efficient MCP tools + persistent memory across sessions</em>
+</p>
 
-Meanwhile, a single `npm test` dumps 20,000 tokens of passing tests into context.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Gr122lyBr/claude-teams-brain/master/demo/dashboard.gif" alt="Brain Dashboard" width="700" />
+  <br><em>Web dashboard — browse, edit, and curate agent memories</em>
+</p>
 
-## The Fix
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Gr122lyBr/claude-teams-brain/master/demo/standup.gif" alt="Standup Meeting" width="700" />
+  <br><em>Standup meeting — cinematic agent briefing with keyboard navigation</em>
+</p>
 
-claude-teams-brain hooks into the Agent Teams lifecycle to:
+---
 
-- **Remember everything** — tasks, decisions, files, all indexed per role
-- **Inject memory automatically** — when `backend` spawns, it receives everything past backend agents did
-- **Filter command output** — 60+ command-aware filters cut token usage by 90–97%
+## What's New in v1.9.0
 
-No extra prompting. No manual context. Your team gets smarter every session.
+- **Web Dashboard** (`/brain-dashboard`) — browse, edit, and curate all agent memories at `localhost:7432`. Overview stats, memory table with inline editing, decision browser, and file map.
+- **Standup Meeting UI** (`/brain-standup`) — cinematic agent standup visualization at `localhost:7433`. Walk through each agent's completed work, blockers, and decisions with keyboard navigation.
+- **Approval Workflow** (`/brain-approve`) — memories from `/brain-remember` now stage as PENDING. Approve, reject, or flag via dashboard or CLI.
+- **Memory Quality Scoring** — confidence levels (HIGH/MEDIUM/LOW/PENDING). Frequently accessed memories auto-promote; stale memories auto-demote.
+- **Better Knowledge Injection** — KB chunks from agent `index` calls injected into future teammates. Cross-team task visibility. Context budget doubled to 6000 chars.
+- **Smarter Agent Extraction** — custom agent names and task subjects extracted from conversation transcripts. `/brain-learn` now extracts 15+ conventions from git history.
+
+---
+
+## Why claude-teams-brain?
+
+### Cut token usage by 90–97%
+
+A single `npm test` dumps 20,000 tokens of passing tests into context. `git push` adds transfer stats nobody reads. Every wasted token costs money and shrinks your context window.
+
+claude-teams-brain replaces raw Bash with **token-efficient MCP tools** that filter, index, and search command output — so only what matters enters context.
+
+### Persistent memory across sessions
+
+Agent Teams are powerful — but ephemeral. Your backend agent spent two hours learning your conventions and building auth. Tomorrow, a new backend agent starts from zero.
+
+claude-teams-brain **indexes everything** — tasks, decisions, files — per role. When `backend` spawns again, it receives the full history of what past backend agents built.
+
+### Smarter agents, better results
+
+Agents that start with context make better decisions. Convention learning from git history, shared knowledge base between teammates, and role-specific injection mean your agents produce higher-quality output from the first command.
+
+---
 
 ## Install
 
@@ -48,15 +83,35 @@ Or with curl:
 bash <(curl -fsSL https://raw.githubusercontent.com/Gr122lyBr/claude-teams-brain/master/claude-teams-brain/scripts/install.sh)
 ```
 
-Then restart Claude Code.
+Then restart Claude Code. That's it — the plugin activates automatically.
 
-> **Optional:** Enable Agent Teams in `~/.claude/settings.json`:
-> ```json
-> { "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
-> ```
-> Without this, the plugin runs in **solo mode** — memory still builds from your own sessions.
+---
 
-## How It Works
+## What It Does
+
+### Token-Efficient Command Execution
+
+Every command through the brain's MCP tools passes through an **8-stage filtering pipeline** with specialized parsers for 60+ commands:
+
+| Command | Without brain | With brain | Savings |
+|---------|--------------|------------|---------|
+| `npm test` | 20,000 tokens of passing tests | Summary + failures only | **90%+** |
+| `git push` | Transfer stats, compression, deltas | `ok main` | **98%** |
+| `npm install` | Warnings, progress bars, funding | `added 542 packages in 12s` | **90%+** |
+| `pytest` (all pass) | Full session output | `15 passed in 2.34s` | **82%** |
+| `docker build` | Layer-by-layer progress | Final image + errors | **95%** |
+| `tsc` (no errors) | Verbose compilation | `✓ no errors` | **90%+** |
+
+**Auto-indexing** — every command's output is indexed into a searchable knowledge base. Run a command once, search it many times. Teammates share the same KB — no duplicate work.
+
+**5 MCP tools** replace raw Bash for any command that produces output:
+- `batch_execute` — run multiple commands in one call, all output auto-indexed
+- `execute` — single command with optional auto-indexing for large output
+- `search` — query indexed output without re-running commands
+- `index` — save findings for yourself and teammates
+- `stats` — see your token savings
+
+### Cross-Session Memory
 
 ```
 Session 1                              Session 2
@@ -74,44 +129,27 @@ You: "Build payments module"           You: "Add refund support"
                                          picks up exactly where it left off
 ```
 
-### Lifecycle Hooks (7 Events)
+The brain hooks into 8 lifecycle events to capture and inject context automatically:
+- **SubagentStart** — injects role-specific memory into new teammates
+- **SubagentStop** — parses transcripts, extracts decisions, tracks files
+- **SessionStart** — warms up KB with project context (CLAUDE.md, git log, directory tree)
+- **SessionEnd** — compresses session into summary for future reference
+- **TaskCompleted** — indexes individual task results immediately
 
-| Hook | What happens |
-|------|-------------|
-| `SessionStart` | Brain initializes, warms up KB (CLAUDE.md, git log, dir tree) |
-| `SubagentStart` | Role-specific memory injected directly into each new teammate |
-| `TaskCompleted` | Task indexed immediately on completion |
-| `SubagentStop` | Rich indexing: files touched, decisions made, output summary from transcript |
-| `PreToolUse` | Injects general context for solo mode tasks |
-| `TeammateIdle` | Passive checkpoint |
-| `SessionEnd` | Full session compressed into a summary entry |
+Memory is **role-based** — `backend`, `frontend`, `tests`, `devops` each build their own history. When a teammate spawns, it receives only what's relevant to its role.
 
-### Output Filtering
+### Works Without Agent Teams
 
-Every command through the brain's MCP tools is filtered before entering context:
+**You don't need Agent Teams to benefit.** In solo mode:
 
-| Command | Before | After | Savings |
-|---------|--------|-------|---------|
-| `git push` | Transfer stats, compression, deltas | `ok main` | **98%** |
-| `npm install` | Warnings, progress bars, funding | `added 542 packages in 12s` | **90%+** |
-| `pytest` (all pass) | Full session output | `15 passed in 2.34s` | **82%** |
-| `npm test` | 20,000 tokens of passing tests | Summary + failures only | **90%+** |
+- All 5 MCP tools work — same 90%+ token savings on every command
+- Memory builds from your own sessions via TaskCompleted and SessionEnd hooks
+- `/brain-learn`, `/brain-remember`, and all commands work normally
+- Convention profiles and git history learning work the same way
 
-60+ commands supported. Raw output is always preserved in the searchable KB — only the filtered version enters context.
+Solo mode activates automatically when Agent Teams isn't enabled. No configuration needed.
 
-## MCP Tools
-
-Five tools exposed to all agents, designed for token efficiency:
-
-| Tool | Purpose |
-|------|---------|
-| `batch_execute` | Run multiple shell commands, auto-index output, search with queries — all in one call |
-| `search` | Query the session knowledge base built by batch_execute or index |
-| `index` | Manually store findings/analysis for later retrieval |
-| `execute` | Run code in sandbox (shell, JS, Python). Auto-indexes large output when `intent` is set |
-| `stats` | Show session context savings metrics |
-
-Standard workflow: `batch_execute` → `search` → `index`
+---
 
 ## Quick Start
 
@@ -127,42 +165,56 @@ Scans your git history and auto-extracts conventions, architecture, file couplin
 ```
 Loads pre-built conventions. Profiles: `nextjs-prisma`, `fastapi`, `go-microservices`, `react-native`, `python-general`.
 
-**Then just use Agent Teams normally.** Memory builds automatically.
+**Then just use Claude Code normally.** Token savings and memory building happen automatically.
+
+---
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
+| `/brain-dashboard` | Open web dashboard for reviewing and curating memories |
+| `/brain-standup` | Open cinematic standup meeting visualization |
+| `/brain-approve` | Approve, reject, or flag pending memories |
 | `/brain-learn` | Auto-learn conventions from git history |
-| `/brain-remember <text>` | Store a rule injected into all future teammates |
+| `/brain-remember <text>` | Store a rule (staged as PENDING until approved) |
 | `/brain-forget <text>` | Remove a stored memory |
 | `/brain-search <query>` | Search the brain knowledge base |
 | `/brain-query <role>` | Preview what context a teammate would receive |
 | `/brain-export` | Export knowledge as `CONVENTIONS.md` |
-| `/brain-stats` | Full stats: memory + KB + filter savings |
+| `/brain-stats` | Full stats: memory + KB + token savings |
 | `/brain-runs` | List past sessions |
 | `/brain-replay [run-id]` | Replay a past session as narrative |
 | `/brain-update` | Pull latest version |
+
+---
 
 ## Key Features
 
 | | |
 |---|---|
-| **Cross-session memory** | Indexes tasks, decisions, and files per role across sessions |
-| **Output filtering** | 60+ command-aware filters, 8-stage pipeline, specialized parsers |
-| **Auto-learn** | `/brain-learn` bootstraps the brain from your git history |
-| **Session KB** | `batch_execute` auto-indexes output into searchable knowledge base |
-| **Solo mode** | Works without Agent Teams — memory builds from your own sessions |
-| **Fully local** | SQLite, no cloud, no telemetry, zero external Python dependencies |
+| **Web Dashboard** | Browse, edit, and curate all memories in a dark-themed web UI |
+| **Standup Meeting UI** | Cinematic per-agent briefing with keyboard navigation |
+| **Memory Quality** | Confidence scoring with auto-promote/demote lifecycle |
+| **Approval Workflow** | Stage, approve, reject, or flag memories before injection |
+| **Token-efficient execution** | 60+ command-aware filters, 8-stage pipeline — 90–97% token reduction |
+| **Auto-indexing KB** | Every command output indexed and searchable. Teammates share results |
+| **Cross-session memory** | Tasks, decisions, and files indexed per role across sessions |
+| **Role-based injection** | Memory routed by agent role — each teammate gets relevant context |
+| **Auto-learn** | `/brain-learn` extracts 15+ conventions from your git history |
+| **Solo mode** | Full token savings and memory without Agent Teams |
+| **Fully local** | SQLite + FTS5, no cloud, no telemetry, zero external Python dependencies |
 | **Cross-platform** | macOS, Linux, WSL2, native Windows — all hooks run via Python |
+
+---
 
 ## Architecture
 
 All data is local in `~/.claude-teams-brain/projects/<hash>/brain.db` (SQLite + FTS5).
 
-7 lifecycle hooks capture everything → role-based memory → ranked + deduplicated → injected within a 3000-token budget.
+8 lifecycle hooks capture everything → role-based memory → ranked + deduplicated → injected within a 6000-char context budget.
 
-For full technical details, MCP tool reference, and troubleshooting, see the **[full documentation](https://github.com/Gr122lyBr/claude-teams-brain/blob/master/docs/DOCUMENTATION.md)**.
+For full technical details, MCP tool reference, and troubleshooting, see the **[full documentation](docs/DOCUMENTATION.md)**.
 
 ## License
 

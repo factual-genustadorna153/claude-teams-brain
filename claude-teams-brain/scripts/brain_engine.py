@@ -28,6 +28,13 @@ Usage:
   brain_engine.py decision-timeline [<project_dir>]
   brain_engine.py learn [<project_dir>]
   brain_engine.py kb-source-age <project_dir> <source>
+  brain_engine.py dashboard-data [<project_dir>]
+  brain_engine.py standup-data [<project_dir>] [<run_id>]
+  brain_engine.py approve-task <task_id> [<project_dir>]
+  brain_engine.py reject-task <task_id> [<project_dir>]
+  brain_engine.py flag-task <task_id> [<project_dir>]
+  brain_engine.py list-pending [<project_dir>]
+  brain_engine.py approve-all-pending [<project_dir>]
 """
 
 import sys
@@ -44,7 +51,7 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 BRAIN_HOME = Path(os.environ.get("CLAUDE_BRAIN_HOME", Path.home() / ".claude-teams-brain"))
-CONTEXT_BUDGET = int(os.environ.get('CLAUDE_BRAIN_CONTEXT_BUDGET', '3000'))
+CONTEXT_BUDGET = int(os.environ.get('CLAUDE_BRAIN_CONTEXT_BUDGET', '6000'))
 
 
 def project_id(project_dir: str) -> str:
@@ -226,6 +233,29 @@ def get_conn(project_dir: str) -> sqlite3.Connection:
         conn.commit()
     except Exception:
         pass
+
+    # ── Schema migrations (safe — columns may already exist) ────────────
+    _migrations = [
+        "ALTER TABLE tasks ADD COLUMN confidence TEXT DEFAULT 'MEDIUM'",
+        "ALTER TABLE tasks ADD COLUMN access_count INTEGER DEFAULT 0",
+        "ALTER TABLE tasks ADD COLUMN last_accessed TEXT",
+        "ALTER TABLE tasks ADD COLUMN status TEXT DEFAULT 'active'",
+        "ALTER TABLE decisions ADD COLUMN status TEXT DEFAULT 'active'",
+    ]
+    for _mig in _migrations:
+        try:
+            conn.execute(_mig)
+        except Exception:
+            pass  # Column already exists
+
+    # Conflicts table
+    conn.execute("""CREATE TABLE IF NOT EXISTS conflicts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_id_a TEXT,
+        memory_id_b TEXT,
+        detected_at TEXT
+    )""")
+    conn.commit()
 
     return conn
 
@@ -556,6 +586,50 @@ def tag_decision_type(text: str) -> str:
     return max(scores, key=scores.get) if scores else 'general'
 
 
+def assign_confidence(source: str) -> str:
+    """Assign confidence level based on how the memory was created."""
+    source = source.lower()
+    if source in ('subagent_stop', 'hook_subagent_stop'):
+        return 'HIGH'
+    elif source in ('task_completed', 'hook_task_completed'):
+        return 'MEDIUM'
+    elif source in ('remember', 'manual'):
+        return 'PENDING'
+    elif source in ('session_end', 'hook_session_end'):
+        return 'LOW'
+    return 'MEDIUM'
+
+
+def promote_memories(conn, role: str):
+    """Promote/demote memories based on access patterns."""
+    now = ts()
+    # Increment access_count and update last_accessed for role's tasks
+    try:
+        conn.execute(
+            """UPDATE tasks SET access_count = access_count + 1, last_accessed = ?
+               WHERE (lower(agent_role) LIKE ? OR lower(agent_name) LIKE ?)
+               AND status = 'active'""",
+            (now, f"%{role.lower()}%", f"%{role.lower()}%")
+        )
+        # Promote frequently accessed memories
+        conn.execute(
+            """UPDATE tasks SET confidence = 'HIGH'
+               WHERE access_count >= 3 AND confidence != 'HIGH' AND status = 'active'"""
+        )
+        # Demote stale memories (>30 days, low access)
+        conn.execute(
+            """UPDATE tasks SET confidence = 'LOW'
+               WHERE last_accessed IS NOT NULL
+               AND julianday('now') - julianday(last_accessed) > 30
+               AND access_count < 2
+               AND confidence NOT IN ('LOW', 'PENDING')
+               AND status = 'active'"""
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+
 # Word pairs that signal contradictions
 CONFLICT_PAIRS = [
     ({'use', 'using', 'chose', 'prefer', 'adopt'}, {'avoid', 'never', 'remove', 'replace', 'drop', 'migrate away'}),
@@ -596,6 +670,18 @@ def detect_conflicts(conn, new_decisions: list, agent_role: str) -> list:
                         conflicts.append(f"\u26a0\ufe0f Possible conflict: '{new_dec[:80]}' vs '{existing_dec[:80]}'")
     except Exception:
         pass
+    # Persist detected conflicts to DB
+    if conflicts:
+        try:
+            for c in conflicts:
+                conn.execute(
+                    "INSERT INTO conflicts (memory_id_a, memory_id_b, detected_at) VALUES (?,?,?)",
+                    (c[:200], '', ts())
+                )
+            conn.commit()
+        except Exception:
+            pass
+
     return conflicts[:3]  # Cap at 3 warnings
 
 
@@ -688,14 +774,15 @@ def cmd_index_task(payload_str: str):
     ]
     decisions = json.dumps(tagged_decisions)
 
+    confidence = p.get("confidence", "MEDIUM")
     conn.execute(
         """INSERT INTO tasks
            (id, run_id, task_subject, agent_name, agent_role,
-            files_touched, decisions, output_summary, completed_at)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+            files_touched, decisions, output_summary, completed_at, confidence)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
         (task_id, run_id,
          p.get("task_subject", ""), p.get("agent_name", ""), p.get("agent_role", ""),
-         files, decisions, p.get("output_summary", ""), ts())
+         files, decisions, p.get("output_summary", ""), ts(), confidence)
     )
 
     # Index individual files
@@ -745,6 +832,9 @@ def cmd_query_role(role: str, project_dir: str, task_description: str = ""):
     """
     conn = get_conn(project_dir)
     role_lower = role.lower()
+
+    # Promote/demote memories based on access patterns
+    promote_memories(conn, role)
 
     # Build keyword set from task description for relevance scoring
     task_keywords = [w.lower() for w in re.split(r'\W+', task_description) if len(w) > 3] if task_description else []
@@ -819,13 +909,50 @@ def cmd_query_role(role: str, project_dir: str, task_description: str = ""):
             seen_files.add(f["file_path"])
             role_files.append(f)
 
+    # KB knowledge — indexed findings from agents (the most valuable curated content)
+    kb_results = []
+    # Search by role first, then by task description keywords
+    search_terms = [role] + (task_keywords[:3] if task_keywords else [])
+    seen_kb = set()
+    for term in search_terms:
+        if not term:
+            continue
+        for title, content, source in kb_search_query(conn, term, limit=3):
+            if source not in seen_kb and source not in EVERGREEN_SOURCES:
+                seen_kb.add(source)
+                kb_results.append({"title": title, "content": content[:400], "source": source})
+    # Also include recent non-warmup KB entries even without keyword match
+    try:
+        recent_kb = conn.execute(
+            """SELECT DISTINCT source, title, content FROM kb_chunks
+               WHERE source NOT IN ('CLAUDE.md','git-log','directory-tree','git-learn-coupling','git-learn-hotspots')
+               AND source NOT LIKE 'auto-%'
+               ORDER BY indexed_at DESC LIMIT 5"""
+        ).fetchall()
+        for r in recent_kb:
+            if r["source"] not in seen_kb:
+                seen_kb.add(r["source"])
+                kb_results.append({"title": r["title"], "content": r["content"][:400], "source": r["source"]})
+    except Exception:
+        pass
+
+    # Also fetch recent tasks from ANY role (not just matching role)
+    # so teammates get cross-team context
+    all_recent_tasks = []
+    if not role_tasks:
+        all_recent_tasks = conn.execute(
+            """SELECT t.task_subject, t.output_summary, t.agent_name, t.agent_role,
+                      t.completed_at
+               FROM tasks t ORDER BY t.completed_at DESC LIMIT 5"""
+        ).fetchall()
+
     last_run = conn.execute(
         "SELECT summary, started_at FROM runs ORDER BY started_at DESC LIMIT 1"
     ).fetchone()
 
     conn.close()
 
-    if not role_tasks and not all_decisions and not fts_results and not manual_memories:
+    if not role_tasks and not all_decisions and not fts_results and not manual_memories and not kb_results and not all_recent_tasks:
         print(json.dumps({"additionalContext": ""}))
         return
 
@@ -871,6 +998,24 @@ def cmd_query_role(role: str, project_dir: str, task_description: str = ""):
             by = d["agent_name"] or "team"
             lines.append(f"- [{by}] {dec}")
         lines.append("")
+
+    if kb_results:
+        lines.append("### Team Knowledge Base")
+        lines.append("_Indexed findings from previous agent sessions:_")
+        for kb in kb_results[:5]:
+            lines.append(f"**[{kb['source']}]** {kb['content']}")
+            lines.append("")
+
+    if all_recent_tasks and not role_tasks:
+        lines.append("### Recent Team Work")
+        for t in all_recent_tasks[:3]:
+            agent = t["agent_name"] or t["agent_role"] or "team"
+            subj = t["task_subject"] or "(no subject)"
+            summary = (t["output_summary"] or "")[:200]
+            lines.append(f"**[{agent}] {subj}**")
+            if summary:
+                lines.append(summary)
+            lines.append("")
 
     if role_files:
         lines.append("### Files You've Worked On")
@@ -1074,9 +1219,9 @@ def cmd_remember(text: str, project_dir: str):
         )
 
     conn.execute(
-        """INSERT INTO decisions (id, run_id, agent_name, decision, rationale, tags, created_at)
-           VALUES (?,?,?,?,?,?,?)""",
-        (uid(), manual_run_id, 'user', text.strip(), '', json.dumps(['manual']), ts())
+        """INSERT INTO decisions (id, run_id, agent_name, decision, rationale, tags, created_at, status)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (uid(), manual_run_id, 'user', text.strip(), '', json.dumps(['manual']), ts(), 'pending')
     )
     conn.commit()
 
@@ -1085,7 +1230,7 @@ def cmd_remember(text: str, project_dir: str):
     ).fetchone()[0]
     conn.close()
 
-    print(json.dumps({"status": "ok", "memory": text.strip(), "total_manual": total}))
+    print(json.dumps({"status": "ok", "memory": text.strip(), "total_manual": total, "approval_status": "pending", "message": "Memory staged as PENDING. Use /brain-approve to confirm, or approve via the dashboard."}))
 
 
 def cmd_forget(text: str, project_dir: str):
@@ -1779,6 +1924,98 @@ def _learn_architecture_signals(commits):
     return signals
 
 
+def _learn_version_practices(commits):
+    """Detect version bumping and release patterns from commit messages."""
+    conventions = []
+    subjects = [c["subject"] for c in commits]
+    total = len(subjects)
+
+    # Version tags in commit messages: "(v1.2.3)" or "v1.2.3"
+    version_pattern = re.compile(r'\(v\d+\.\d+\.\d+\)|v\d+\.\d+\.\d+')
+    version_commits = [s for s in subjects if version_pattern.search(s)]
+    if len(version_commits) >= 3:
+        conventions.append(f"Convention: version numbers are included in commit messages (found in {len(version_commits)}/{total} commits)")
+
+    # Chore commits for version bumps
+    bump_pattern = re.compile(r'bump|version|release', re.I)
+    bump_commits = [s for s in subjects if bump_pattern.search(s)]
+    if bump_commits:
+        conventions.append(f"Convention: version bumps use dedicated commits ({bump_commits[0][:60]})")
+
+    return conventions
+
+
+def _learn_directory_conventions(commits):
+    """Detect directory structure patterns and file organization."""
+    conventions = []
+    all_files = set()
+    for c in commits:
+        all_files.update(c["files"])
+
+    if not all_files:
+        return conventions
+
+    # Analyze directory purposes by file extensions
+    dir_extensions = defaultdict(lambda: defaultdict(int))
+    for f in all_files:
+        parts = f.split('/')
+        if len(parts) >= 2:
+            top_dir = parts[0]
+            ext = f.rsplit('.', 1)[-1] if '.' in f else ''
+            if ext:
+                dir_extensions[top_dir][ext] += 1
+
+    # Detect directory roles
+    dir_roles = {}
+    for d, exts in dir_extensions.items():
+        dominant = max(exts, key=exts.get) if exts else ''
+        total_files = sum(exts.values())
+        if total_files < 2:
+            continue
+        ext_map = {
+            'py': 'Python', 'js': 'JavaScript', 'mjs': 'JavaScript (ESM)',
+            'ts': 'TypeScript', 'tsx': 'React/TypeScript', 'jsx': 'React',
+            'sh': 'shell scripts', 'md': 'documentation', 'json': 'config',
+            'yml': 'YAML config', 'yaml': 'YAML config',
+        }
+        lang = ext_map.get(dominant, dominant)
+        if lang and d not in ('.', ''):
+            dir_roles[d] = lang
+
+    if dir_roles:
+        parts = [f"{d}/ ({lang})" for d, lang in sorted(dir_roles.items())]
+        if len(parts) <= 6:
+            conventions.append(f"Architecture: directory structure — {', '.join(parts)}")
+
+    return conventions
+
+
+def _learn_coupling_conventions(couplings):
+    """Convert file coupling data into actionable conventions."""
+    conventions = []
+    for c in couplings[:5]:  # Top 5 most coupled pairs
+        if c['co_occurrences'] >= 3 and c['pct'] >= 5:
+            a = c['file_a'].rsplit('/', 1)[-1]  # Just filename
+            b = c['file_b'].rsplit('/', 1)[-1]
+            conventions.append(
+                f"Coupling: {a} and {b} change together ({c['co_occurrences']} commits, {c['pct']}%) — update both when modifying either"
+            )
+    return conventions
+
+
+def _learn_hotspot_conventions(hotspots):
+    """Convert hotspot data into conventions about critical files."""
+    conventions = []
+    file_spots = [h for h in hotspots if h["type"] == "file"]
+    for h in file_spots[:3]:  # Top 3 most changed files
+        if h['commit_count'] >= 5:
+            name = h['path'].rsplit('/', 1)[-1]
+            conventions.append(
+                f"Key file: {name} ({h['commit_count']} commits) — high-change file, review carefully when modifying"
+            )
+    return conventions
+
+
 def _learn_file_coupling(commits):
     """Find files that frequently change together."""
     pair_counts = defaultdict(int)
@@ -1867,10 +2104,16 @@ def cmd_learn(project_dir):
     all_conventions.extend(_learn_commit_conventions(commits))
     all_conventions.extend(_learn_branch_conventions(project_dir))
     all_conventions.extend(_learn_architecture_signals(commits))
+    all_conventions.extend(_learn_version_practices(commits))
+    all_conventions.extend(_learn_directory_conventions(commits))
 
     # File analysis
     couplings = _learn_file_coupling(commits)
     hotspots = _learn_hotspots(commits)
+
+    # Convert couplings and hotspots into actionable conventions
+    all_conventions.extend(_learn_coupling_conventions(couplings))
+    all_conventions.extend(_learn_hotspot_conventions(hotspots))
 
     # Deduplicate and store conventions
     conn = get_conn(project_dir)
@@ -1892,12 +2135,18 @@ def cmd_learn(project_dir):
         cat = 'general'
         if conv.startswith('Architecture:'):
             cat = 'architecture'
+        elif conv.startswith('Coupling:'):
+            cat = 'coupling'
+        elif conv.startswith('Key file:'):
+            cat = 'hotspot'
         elif 'commit' in conv.lower():
             cat = 'commit'
         elif 'branch' in conv.lower():
             cat = 'branch'
         elif 'test' in conv.lower():
             cat = 'testing'
+        elif 'version' in conv.lower():
+            cat = 'versioning'
 
         conn.execute(
             """INSERT INTO decisions (id, run_id, agent_name, decision, rationale, tags, created_at)
@@ -1948,6 +2197,229 @@ def cmd_learn(project_dir):
         "conventions": new_conventions,
         "message": f"Learned {len(new_conventions)} conventions from {len(commits)} commits."
     }, indent=2))
+
+
+def cmd_dashboard_data(project_dir: str):
+    """Return all data needed for the dashboard UI as JSON."""
+    conn = get_conn(project_dir)
+
+    # Stats
+    stats = {
+        "tasks": conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0],
+        "decisions": conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0],
+        "runs": conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0],
+        "files": conn.execute("SELECT COUNT(DISTINCT file_path) FROM file_index").fetchone()[0],
+        "conflicts": 0,
+    }
+    try:
+        stats["conflicts"] = conn.execute("SELECT COUNT(*) FROM conflicts").fetchone()[0]
+    except Exception:
+        pass
+
+    # Tasks with confidence
+    tasks = []
+    for r in conn.execute(
+        """SELECT id, task_subject, agent_name, agent_role, output_summary,
+                  completed_at, confidence, access_count, status
+           FROM tasks ORDER BY completed_at DESC LIMIT 100"""
+    ).fetchall():
+        tasks.append({
+            "id": r["id"], "subject": r["task_subject"],
+            "agent": r["agent_name"], "role": r["agent_role"],
+            "summary": (r["output_summary"] or "")[:200],
+            "completed_at": r["completed_at"],
+            "confidence": r["confidence"] or "MEDIUM",
+            "access_count": r["access_count"] or 0,
+            "status": r["status"] or "active",
+        })
+
+    # Decisions
+    decisions = []
+    for r in conn.execute(
+        """SELECT id, agent_name, decision, rationale, tags, created_at, status
+           FROM decisions ORDER BY created_at DESC LIMIT 100"""
+    ).fetchall():
+        decisions.append({
+            "id": r["id"], "agent": r["agent_name"],
+            "decision": r["decision"], "rationale": r["rationale"] or "",
+            "tags": r["tags"] or "[]", "created_at": r["created_at"],
+            "status": r["status"] or "active",
+        })
+
+    # Files
+    files = []
+    for r in conn.execute(
+        """SELECT file_path, COUNT(*) as touches,
+                  GROUP_CONCAT(DISTINCT agent_name) as agents
+           FROM file_index GROUP BY file_path ORDER BY touches DESC LIMIT 50"""
+    ).fetchall():
+        files.append({
+            "path": r["file_path"], "touches": r["touches"],
+            "agents": r["agents"] or "",
+        })
+
+    # Sessions
+    sessions = []
+    for r in conn.execute(
+        "SELECT id, started_at, ended_at, summary FROM runs ORDER BY started_at DESC LIMIT 20"
+    ).fetchall():
+        task_count = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE run_id = ?", (r["id"],)
+        ).fetchone()[0]
+        sessions.append({
+            "id": r["id"], "started_at": r["started_at"],
+            "ended_at": r["ended_at"], "summary": r["summary"] or "",
+            "task_count": task_count,
+        })
+
+    conn.close()
+    print(json.dumps({
+        "stats": stats, "tasks": tasks, "decisions": decisions,
+        "files": files, "sessions": sessions,
+    }))
+
+
+def cmd_standup_data(project_dir: str, run_id: str = ""):
+    """Return per-role standup report data as JSON."""
+    conn = get_conn(project_dir)
+
+    # Get distinct roles
+    roles = [r[0] for r in conn.execute(
+        "SELECT DISTINCT agent_role FROM tasks WHERE agent_role != '' ORDER BY agent_role"
+    ).fetchall()]
+
+    reports = []
+    for role in roles:
+        # Yesterday: last completed task summary
+        last_task = conn.execute(
+            """SELECT task_subject, output_summary, completed_at FROM tasks
+               WHERE lower(agent_role) = lower(?) ORDER BY completed_at DESC LIMIT 1""",
+            (role,)
+        ).fetchone()
+
+        yesterday = last_task["output_summary"] or last_task["task_subject"] if last_task else "No previous work"
+
+        # Today: most recent task subject
+        today = last_task["task_subject"] if last_task else "No tasks assigned"
+
+        # Blockers: decisions with blocked/waiting tags
+        blockers = []
+        for d in conn.execute(
+            """SELECT decision FROM decisions
+               WHERE lower(tags) LIKE '%block%' OR lower(tags) LIKE '%wait%'
+               ORDER BY created_at DESC LIMIT 3"""
+        ).fetchall():
+            blockers.append(d["decision"][:100])
+
+        # Files
+        role_files = [r["file_path"] for r in conn.execute(
+            """SELECT DISTINCT file_path FROM file_index
+               WHERE lower(agent_name) LIKE ? ORDER BY touched_at DESC LIMIT 5""",
+            (f"%{role.lower()}%",)
+        ).fetchall()]
+
+        # Recent decisions
+        role_decisions = [r["decision"][:100] for r in conn.execute(
+            """SELECT decision FROM decisions
+               WHERE lower(agent_name) LIKE ? AND agent_name != 'user'
+               ORDER BY created_at DESC LIMIT 2""",
+            (f"%{role.lower()}%",)
+        ).fetchall()]
+
+        reports.append({
+            "role": role,
+            "yesterday": yesterday[:300],
+            "today": today[:200],
+            "blockers": blockers or ["None"],
+            "files": role_files,
+            "decisions": role_decisions,
+        })
+
+    conn.close()
+    print(json.dumps({"reports": reports}))
+
+
+def cmd_approve_task(task_id: str, project_dir: str):
+    """Set a task or decision's confidence to HIGH (approved)."""
+    conn = get_conn(project_dir)
+    # Try tasks first
+    updated = conn.execute(
+        "UPDATE tasks SET confidence = 'HIGH', status = 'active' WHERE id = ?", (task_id,)
+    ).rowcount
+    # Also try decisions
+    updated += conn.execute(
+        "UPDATE decisions SET status = 'active' WHERE id = ?", (task_id,)
+    ).rowcount
+    conn.commit()
+    conn.close()
+    status = "ok" if updated > 0 else "not_found"
+    print(json.dumps({"status": status, "task_id": task_id, "updated": updated}))
+
+
+def cmd_reject_task(task_id: str, project_dir: str):
+    """Reject a task or decision (set status=rejected)."""
+    conn = get_conn(project_dir)
+    updated = conn.execute(
+        "UPDATE tasks SET status = 'rejected' WHERE id = ?", (task_id,)
+    ).rowcount
+    updated += conn.execute(
+        "UPDATE decisions SET status = 'rejected' WHERE id = ?", (task_id,)
+    ).rowcount
+    conn.commit()
+    conn.close()
+    status = "ok" if updated > 0 else "not_found"
+    print(json.dumps({"status": status, "task_id": task_id}))
+
+
+def cmd_flag_task(task_id: str, project_dir: str):
+    """Flag a task or decision for review."""
+    conn = get_conn(project_dir)
+    updated = conn.execute(
+        "UPDATE tasks SET status = 'flagged' WHERE id = ?", (task_id,)
+    ).rowcount
+    updated += conn.execute(
+        "UPDATE decisions SET status = 'flagged' WHERE id = ?", (task_id,)
+    ).rowcount
+    conn.commit()
+    conn.close()
+    status = "ok" if updated > 0 else "not_found"
+    print(json.dumps({"status": status, "task_id": task_id}))
+
+
+def cmd_list_pending(project_dir: str):
+    """List all pending status items."""
+    conn = get_conn(project_dir)
+    pending_tasks = conn.execute(
+        """SELECT id, task_subject, agent_role, confidence, completed_at
+           FROM tasks WHERE status = 'pending' ORDER BY completed_at DESC"""
+    ).fetchall()
+    pending_decisions = conn.execute(
+        """SELECT id, decision, agent_name, created_at
+           FROM decisions WHERE status = 'pending' ORDER BY created_at DESC"""
+    ).fetchall()
+    conn.close()
+
+    items = []
+    for t in pending_tasks:
+        items.append({"type": "task", "id": t["id"], "text": t["task_subject"], "role": t["agent_role"], "at": t["completed_at"]})
+    for d in pending_decisions:
+        items.append({"type": "decision", "id": d["id"], "text": d["decision"], "agent": d["agent_name"], "at": d["created_at"]})
+
+    print(json.dumps({"pending": items, "count": len(items)}))
+
+
+def cmd_approve_all_pending(project_dir: str):
+    """Approve all pending items."""
+    conn = get_conn(project_dir)
+    t_count = conn.execute(
+        "UPDATE tasks SET status = 'active', confidence = 'HIGH' WHERE status = 'pending'"
+    ).rowcount
+    d_count = conn.execute(
+        "UPDATE decisions SET status = 'active' WHERE status = 'pending'"
+    ).rowcount
+    conn.commit()
+    conn.close()
+    print(json.dumps({"status": "ok", "tasks_approved": t_count, "decisions_approved": d_count}))
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
@@ -2052,6 +2524,35 @@ def main():
 
         elif cmd == "learn":
             cmd_learn(args[1] if len(args) > 1 else cwd)
+
+        elif cmd == "dashboard-data":
+            cmd_dashboard_data(args[1] if len(args) > 1 else cwd)
+
+        elif cmd == "standup-data":
+            project_dir = args[1] if len(args) > 1 else cwd
+            run_id = args[2] if len(args) > 2 else ""
+            cmd_standup_data(project_dir, run_id)
+
+        elif cmd == "approve-task":
+            task_id = args[1] if len(args) > 1 else ""
+            project_dir = args[2] if len(args) > 2 else cwd
+            cmd_approve_task(task_id, project_dir)
+
+        elif cmd == "reject-task":
+            task_id = args[1] if len(args) > 1 else ""
+            project_dir = args[2] if len(args) > 2 else cwd
+            cmd_reject_task(task_id, project_dir)
+
+        elif cmd == "flag-task":
+            task_id = args[1] if len(args) > 1 else ""
+            project_dir = args[2] if len(args) > 2 else cwd
+            cmd_flag_task(task_id, project_dir)
+
+        elif cmd == "list-pending":
+            cmd_list_pending(args[1] if len(args) > 1 else cwd)
+
+        elif cmd == "approve-all-pending":
+            cmd_approve_all_pending(args[1] if len(args) > 1 else cwd)
 
         else:
             print(f"Unknown command: {cmd}", file=sys.stderr)

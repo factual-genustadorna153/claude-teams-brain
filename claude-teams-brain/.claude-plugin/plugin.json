@@ -1,6 +1,6 @@
 {
   "name": "claude-teams-brain",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Token-efficient command execution and persistent memory for Claude Code. 60+ command filters save 90%+ tokens. Auto-indexes output into searchable KB. Cross-session memory injects role-specific context into teammates.",
   "author": {
     "name": "claude-teams-brain contributors",

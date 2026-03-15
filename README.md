@@ -19,10 +19,33 @@
 
 ---
 
-<!-- TODO: Replace with your recorded GIF -->
+## See It In Action
+
 <p align="center">
-  <img src="demo/demo.gif" alt="claude-teams-brain demo" width="700" />
+  <img src="demo/demo.gif" alt="CLI Plugin in Action" width="700" />
+  <br><em>Token-efficient MCP tools + persistent memory across sessions</em>
 </p>
+
+<p align="center">
+  <img src="demo/dashboard.gif" alt="Brain Dashboard" width="700" />
+  <br><em>Web dashboard — browse, edit, and curate agent memories</em>
+</p>
+
+<p align="center">
+  <img src="demo/standup.gif" alt="Standup Meeting" width="700" />
+  <br><em>Standup meeting — cinematic agent briefing with keyboard navigation</em>
+</p>
+
+---
+
+## What's New in v1.9.0
+
+- **Web Dashboard** (`/brain-dashboard`) — browse, edit, and curate all agent memories at `localhost:7432`. Overview stats, memory table with inline editing, decision browser, and file map.
+- **Standup Meeting UI** (`/brain-standup`) — cinematic agent standup visualization at `localhost:7433`. Walk through each agent's completed work, blockers, and decisions with keyboard navigation.
+- **Approval Workflow** (`/brain-approve`) — memories from `/brain-remember` now stage as PENDING. Approve, reject, or flag via dashboard or CLI.
+- **Memory Quality Scoring** — confidence levels (HIGH/MEDIUM/LOW/PENDING). Frequently accessed memories auto-promote; stale memories auto-demote.
+- **Better Knowledge Injection** — KB chunks from agent `index` calls injected into future teammates. Cross-team task visibility. Context budget doubled to 6000 chars.
+- **Smarter Agent Extraction** — custom agent names and task subjects extracted from conversation transcripts. `/brain-learn` now extracts 15+ conventions from git history.
 
 ---
 
@@ -106,7 +129,7 @@ You: "Build payments module"           You: "Add refund support"
                                          picks up exactly where it left off
 ```
 
-The brain hooks into 7 lifecycle events to capture and inject context automatically:
+The brain hooks into 8 lifecycle events to capture and inject context automatically:
 - **SubagentStart** — injects role-specific memory into new teammates
 - **SubagentStop** — parses transcripts, extracts decisions, tracks files
 - **SessionStart** — warms up KB with project context (CLAUDE.md, git log, directory tree)
@@ -150,8 +173,11 @@ Loads pre-built conventions. Profiles: `nextjs-prisma`, `fastapi`, `go-microserv
 
 | Command | Description |
 |---------|-------------|
+| `/brain-dashboard` | Open web dashboard for reviewing and curating memories |
+| `/brain-standup` | Open cinematic standup meeting visualization |
+| `/brain-approve` | Approve, reject, or flag pending memories |
 | `/brain-learn` | Auto-learn conventions from git history |
-| `/brain-remember <text>` | Store a rule injected into all future teammates |
+| `/brain-remember <text>` | Store a rule (staged as PENDING until approved) |
 | `/brain-forget <text>` | Remove a stored memory |
 | `/brain-search <query>` | Search the brain knowledge base |
 | `/brain-query <role>` | Preview what context a teammate would receive |
@@ -167,11 +193,15 @@ Loads pre-built conventions. Profiles: `nextjs-prisma`, `fastapi`, `go-microserv
 
 | | |
 |---|---|
+| **Web Dashboard** | Browse, edit, and curate all memories in a dark-themed web UI |
+| **Standup Meeting UI** | Cinematic per-agent briefing with keyboard navigation |
+| **Memory Quality** | Confidence scoring with auto-promote/demote lifecycle |
+| **Approval Workflow** | Stage, approve, reject, or flag memories before injection |
 | **Token-efficient execution** | 60+ command-aware filters, 8-stage pipeline — 90–97% token reduction |
 | **Auto-indexing KB** | Every command output indexed and searchable. Teammates share results |
 | **Cross-session memory** | Tasks, decisions, and files indexed per role across sessions |
 | **Role-based injection** | Memory routed by agent role — each teammate gets relevant context |
-| **Auto-learn** | `/brain-learn` bootstraps the brain from your git history |
+| **Auto-learn** | `/brain-learn` extracts 15+ conventions from your git history |
 | **Solo mode** | Full token savings and memory without Agent Teams |
 | **Fully local** | SQLite + FTS5, no cloud, no telemetry, zero external Python dependencies |
 | **Cross-platform** | macOS, Linux, WSL2, native Windows — all hooks run via Python |
@@ -182,7 +212,7 @@ Loads pre-built conventions. Profiles: `nextjs-prisma`, `fastapi`, `go-microserv
 
 All data is local in `~/.claude-teams-brain/projects/<hash>/brain.db` (SQLite + FTS5).
 
-7 lifecycle hooks capture everything → role-based memory → ranked + deduplicated → injected within a 3000-token budget.
+8 lifecycle hooks capture everything → role-based memory → ranked + deduplicated → injected within a 6000-char context budget.
 
 For full technical details, MCP tool reference, and troubleshooting, see the **[full documentation](docs/DOCUMENTATION.md)**.
 

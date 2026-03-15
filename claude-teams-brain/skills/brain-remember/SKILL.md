@@ -20,5 +20,6 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/brain_engine.py remember "$ARGS" "$CLAUDE_
 ```
 
 Confirm success and echo back the stored memory.
-Tell the user it will appear in every new teammate's context automatically.
+Note: memories are now staged as **PENDING**. Use `/brain-approve` to confirm them, or approve via the `/brain-dashboard`.
+Tell the user it will appear in every new teammate's context once approved.
 Mention `/brain-forget` to remove it if needed.
