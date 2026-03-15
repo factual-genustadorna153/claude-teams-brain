@@ -2,14 +2,21 @@
 
 Persistent cross-session memory + intelligent output filtering for Claude Code Agent Teams.
 
+**Version:** 1.8.0
+
 ---
 
 ## Table of Contents
 
+- [Installation](#installation)
 - [How It Works](#how-it-works)
   - [Memory System](#memory-system)
   - [Output Filtering Pipeline](#output-filtering-pipeline)
   - [Session Warm-Up](#session-warm-up)
+- [Agent Teams Best Practices](#agent-teams-best-practices)
+- [What's New in v1.8](#whats-new-in-v18)
+  - [Smart Command Routing](#smart-command-routing--no-more-false-blocks)
+  - [Debug Mode (raw=true)](#debug-mode-rawtrue)
 - [What's New in v1.5](#whats-new-in-v15)
   - [Output Filtering — 80-99% Token Reduction](#output-filtering--80-99-token-reduction)
   - [/brain-learn — Zero-Setup Convention Learning](#brain-learn--zero-setup-convention-learning)
@@ -29,6 +36,55 @@ Persistent cross-session memory + intelligent output filtering for Claude Code A
 
 ---
 
+## Installation
+
+### Option A: Inside Claude Code
+
+```
+/plugin marketplace add https://github.com/Gr122lyBr/claude-teams-brain
+/plugin install claude-teams-brain@claude-teams-brain
+```
+
+### Option B: Bootstrap Script (recommended for first install)
+
+If Option A fails with "Source path does not exist", open a **regular terminal** (not inside Claude Code) and run:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Gr122lyBr/claude-teams-brain/master/claude-teams-brain/scripts/install.sh)
+```
+
+The script will:
+1. Clone the repo to `~/.claude/plugins/marketplaces/claude-teams-brain`
+2. Patch `known_marketplaces.json` so the install location is correct
+3. Sync the plugin into the versioned cache directory
+4. Update `installed_plugins.json` with the correct version and path
+5. Add MCP tool permissions to `~/.claude/settings.json`
+
+Then restart Claude Code.
+
+### Enable Agent Teams
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  }
+}
+```
+
+### Verify Installation
+
+After restarting Claude Code, your first response should show:
+
+```
+🧠 claude-teams-brain active — 0 tasks · 0 decisions · 0 sessions
+   KB warmed: CLAUDE.md, git-log, dir-tree
+```
+
+---
+
 ## How It Works
 
 ### Memory System
@@ -41,7 +97,7 @@ claude-teams-brain hooks into seven lifecycle events:
 | `SubagentStart` | Role-specific memory injected — ranked by relevance to the current task, deduplicated |
 | `TaskCompleted` | Task indexed immediately; shows `🧠 Indexed: [agent] task` confirmation |
 | `SubagentStop` | Rich indexing: files touched, decisions made, output summary extracted from transcript |
-| `PreToolUse` | Injects context for solo-mode tasks; suggests MCP tools for large-output commands |
+| `PreToolUse` | Injects context for solo-mode tasks; hard-blocks test runners, soft-tips other large-output commands with MCP suggestions |
 | `TeammateIdle` | Passive checkpoint |
 | `SessionEnd` | Full session compressed into a summary entry |
 
@@ -75,6 +131,96 @@ At every `SessionStart`, the brain automatically pre-indexes:
 | Convention files | `.cursorrules`, `AGENTS.md`, `CONVENTIONS.md` (if present) |
 
 All data lives in `~/.claude-teams-brain/projects/<project-hash>/brain.db` — a local SQLite database. Nothing is sent anywhere. No external dependencies beyond Python 3.8+ stdlib.
+
+---
+
+## Agent Teams Best Practices
+
+Always use agent teams for tasks that can be parallelized across concerns. Spawn specialized teammates with role-specific names rather than doing everything in a single session. Good team structures:
+
+- **Feature work:** `backend`, `frontend`, `tests`
+- **Reviews:** `security`, `performance`, `coverage`
+- **Architecture:** `architect`, `devil-advocate`, `implementer`
+- **Debugging:** name teammates after the hypothesis they're testing
+- **Research & writing:** `researcher`, `writer`, `editor`
+
+The claude-teams-brain plugin is active — each teammate will automatically receive memory from past sessions relevant to their role.
+
+### Recommended CLAUDE.md additions
+
+Add the following to your project's `CLAUDE.md` to maximize the plugin's value:
+
+```markdown
+## Agent Teams
+
+### Memory
+- Use descriptive agent names: `backend`, `frontend`, `database`, `tests`, `devops`, `security`
+- Run `/brain-status` before starting a new team to review accumulated context
+- Run `/brain-remember <rule>` to store conventions that all future teammates should follow
+- Run `/brain-query <role>` to preview what a teammate would receive before spawning
+
+### Context Efficiency (MCP tools)
+All teammates have access to five brain MCP tools — prefer them over raw Bash:
+- `batch_execute` — run multiple shell commands in one call, all output auto-indexed
+- `search` — query indexed output without re-running commands
+- `index` — save findings for teammates to access
+- `execute(intent=...)` — run code; auto-indexes large output when intent is set
+- `execute(raw=true)` — full raw output for debugging (no indexing)
+- `stats` — check context savings at end of investigation
+
+Standard workflow: `batch_execute` → `search` → `index`
+
+### Decision Logging
+The brain auto-captures decisions from agent transcripts. Help it by writing decisions clearly:
+- "Decided to use X because Y"
+- "Convention: always use Z"
+- "Switched to X instead of Y"
+- "Approach: ..."
+```
+
+---
+
+## What's New in v1.8
+
+### Smart Command Routing — No More False Blocks
+
+Previously, the PreToolUse hook **hard-blocked** many common commands (`git diff`, `git log`, `docker ps`, `docker logs`, `grep`, `cat`, etc.), forcing agents to use MCP tools for everything. This caused agents to get stuck in loops when they needed output for debugging.
+
+**v1.8 replaces aggressive blocking with a 4-tier system:**
+
+| Tier | Action | Commands |
+|------|--------|----------|
+| **Safe** | Allow silently | `git status`, `git add`, `git commit`, `ls`, `mkdir`, `pip install`, etc. |
+| **Hard block** | Exit 2, redirect to MCP | Test runners only: `npm test`, `pytest`, `jest`, `cargo test`, `go test` |
+| **Soft tip** | Allow + inject suggestion | `git log`, `git diff`, `docker ps`, `docker logs`, `grep`, `cat`, `kubectl`, etc. |
+| **Unknown** | Allow + gentle reminder | Everything else |
+
+**What changed:**
+- `git diff`, `git log`, `docker ps`, `docker logs`, `grep`, `cat`, `head`, `tail`, `kubectl` — all **allowed now** with a helpful tip suggesting MCP alternatives for token efficiency
+- Only test runners (which produce megabytes of output) are still hard-blocked
+- Tip messages teach agents about `execute(raw=true)` for debugging
+
+### Debug Mode (raw=true)
+
+The `execute` tool now supports a `raw` parameter for debugging scenarios:
+
+```json
+{
+  "language": "shell",
+  "code": "docker logs myapp --tail 200 2>&1",
+  "raw": true
+}
+```
+
+When `raw=true`, the full command output is returned directly (up to 120KB) without indexing or filtering. Use this when you need complete output for troubleshooting.
+
+**Three execute modes:**
+
+| Mode | When to use | Example |
+|------|-------------|---------|
+| **Default** | Small output, direct results | `execute(language="shell", code="git status")` |
+| **intent** | Large output, token-efficient | `execute(language="shell", code="npm test", intent="failing tests")` |
+| **raw** | Debugging, need full output | `execute(language="shell", code="docker logs app", raw=true)` |
 
 ---
 
@@ -228,13 +374,20 @@ Manually index content (findings, analysis, data) for later retrieval by yoursel
 
 ### execute
 
-Run code in a sandboxed subprocess. Set `intent` to auto-index and search large output. Shell commands are automatically filtered through the output pipeline.
+Run code in a sandboxed subprocess. Supports three modes: default (direct output), intent-based (auto-index large output), and raw (full debug output).
+
+```json
+{
+  "language": "shell",
+  "code": "docker logs myapp --tail 200 2>&1",
+  "raw": true
+}
+```
 
 ```json
 {
   "language": "python",
   "code": "import ast; print(ast.dump(ast.parse(open('main.py').read())))",
-  "timeout": 30000,
   "intent": "find all class definitions"
 }
 ```
@@ -244,9 +397,10 @@ Run code in a sandboxed subprocess. Set `intent` to auto-index and search large 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `language` | string | Yes | One of: `shell`, `javascript`, `python` |
-| `code` | string | Yes | Code to execute |
+| `code` | string | Yes | Code or shell command to execute |
 | `timeout` | number | No | Timeout in milliseconds (default: 30000) |
-| `intent` | string | No | If set and output > 5KB, auto-indexes and returns search results instead of raw output |
+| `intent` | string | No | If set and output > 5KB, auto-indexes and returns search results instead of raw output (token-efficient mode) |
+| `raw` | boolean | No | If true, returns full raw output without indexing (up to 120KB). Use for debugging when you need complete command output (default: false) |
 
 ### stats
 
@@ -297,30 +451,29 @@ Loadable via `/brain-seed <name>`:
 
 ### Updating the Plugin
 
+**Recommended:** Run inside Claude Code:
+
 ```
 /brain-update
 ```
 
-> **On version < 1.1.2?** `/brain-update` had a bug where it silently skipped updating the install path, so after restart the old version kept loading. Skip `/brain-update` and use the bootstrap script below instead.
+This pulls the latest from GitHub, syncs to the plugin cache, and reports what changed.
 
-If you are on an older version, or if the update fails with a "Source path does not exist" error, run the bootstrap script instead.
-
-**Run this in your terminal** (not inside Claude Code — open a regular terminal like Terminal, iTerm2, PowerShell, or WSL):
+**If `/brain-update` fails**, use the bootstrap script in a regular terminal:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Gr122lyBr/claude-teams-brain/master/claude-teams-brain/scripts/install.sh)
 ```
 
-This clones/pulls the latest repo, patches `known_marketplaces.json`, and re-syncs the plugin cache. Then restart Claude Code.
+Then restart Claude Code.
 
-If you prefer the manual steps:
+**Manual alternative:**
 
 ```
 /plugin marketplace remove claude-teams-brain
 /plugin marketplace add https://github.com/Gr122lyBr/claude-teams-brain
+/plugin install claude-teams-brain@claude-teams-brain
 ```
-
-Then run the bootstrap script above before running `/plugin install claude-teams-brain@claude-teams-brain`.
 
 ---
 

@@ -17,7 +17,7 @@ function detectRuntime(language) {
 
 export async function runCode({ language, code, timeout = 30000 }) {
   const runtime = detectRuntime(language);
-  if (!runtime) return { stdout: '', stderr: `Runtime not found for: ${language}`, exitCode: 1 };
+  if (!runtime) return { stdout: '', stderr: `Runtime not found for: ${language}. Valid languages: shell, javascript, python. Make sure to pass language="shell" for shell commands.`, exitCode: 1 };
 
   const tmpDir = mkdtempSync(join(tmpdir(), 'ctb-'));
   try {

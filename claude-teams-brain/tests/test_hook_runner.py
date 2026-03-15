@@ -16,18 +16,24 @@ import hook_runner
 
 
 class TestCommandRouting(unittest.TestCase):
-    """Test the 3-tier command classification (safe / block / tip)."""
+    """Test the 4-tier command classification (safe / hard-block / tip / unknown)."""
 
     def _is_safe(self, cmd):
         """Check if a command matches the safe list."""
         cmd_lower = cmd.lower()
         return any(cmd_lower.startswith(s) or s in cmd_lower for s in hook_runner._SAFE_CMDS)
 
-    def _is_blocked(self, cmd):
-        """Check if a command matches the block list (primary command only, before pipes)."""
+    def _is_hard_blocked(self, cmd):
+        """Check if a command matches the hard block list (test runners only)."""
         cmd_lower = cmd.lower()
         primary = cmd_lower.split("|")[0].strip() if "|" in cmd_lower else cmd_lower
-        return any(p in primary for p in hook_runner._BLOCK_CMDS)
+        return any(p in primary for p in hook_runner._HARD_BLOCK_CMDS)
+
+    def _is_tipped(self, cmd):
+        """Check if a command matches the soft tip list (allowed with suggestion)."""
+        cmd_lower = cmd.lower()
+        primary = cmd_lower.split("|")[0].strip() if "|" in cmd_lower else cmd_lower
+        return any(p in primary for p in hook_runner._TIP_CMDS)
 
     # ── Safe commands (Tier 1) ──
 
@@ -62,116 +68,126 @@ class TestCommandRouting(unittest.TestCase):
         """python3 -c 'import py_compile; ...' should be safe."""
         self.assertTrue(self._is_safe('python3 -c "import py_compile; py_compile.compile(\'test.py\')"'))
 
-    # ── Blocked commands (Tier 2) ──
+    # ── Hard-blocked commands (Tier 2) — only test runners ──
 
     def test_block_npm_test(self):
-        self.assertTrue(self._is_blocked("npm test"))
+        self.assertTrue(self._is_hard_blocked("npm test"))
 
     def test_block_pytest(self):
-        self.assertTrue(self._is_blocked("pytest -v tests/"))
+        self.assertTrue(self._is_hard_blocked("pytest -v tests/"))
 
     def test_block_jest(self):
-        self.assertTrue(self._is_blocked("jest --coverage"))
-
-    def test_block_grep(self):
-        self.assertTrue(self._is_blocked("grep -r 'pattern' src/"))
-
-    def test_block_rg(self):
-        self.assertTrue(self._is_blocked("rg 'pattern' src/"))
-
-    def test_block_find(self):
-        self.assertTrue(self._is_blocked("find . -name '*.py'"))
-
-    def test_block_cat(self):
-        self.assertTrue(self._is_blocked("cat src/main.py"))
-
-    def test_block_head(self):
-        self.assertTrue(self._is_blocked("head -n 100 file.txt"))
-
-    def test_block_tail(self):
-        self.assertTrue(self._is_blocked("tail -f log.txt"))
-
-    def test_block_git_log(self):
-        self.assertTrue(self._is_blocked("git log --oneline"))
-
-    def test_block_git_diff(self):
-        self.assertTrue(self._is_blocked("git diff HEAD~3"))
-
-    def test_block_git_show(self):
-        self.assertTrue(self._is_blocked("git show HEAD"))
-
-    def test_block_git_blame(self):
-        self.assertTrue(self._is_blocked("git blame src/main.py"))
-
-    def test_block_docker_logs(self):
-        self.assertTrue(self._is_blocked("docker logs container_id"))
-
-    def test_block_kubectl_get(self):
-        self.assertTrue(self._is_blocked("kubectl get pods"))
-
-    def test_block_pip_list(self):
-        self.assertTrue(self._is_blocked("pip list"))
-
-    def test_block_npm_list(self):
-        self.assertTrue(self._is_blocked("npm list"))
+        self.assertTrue(self._is_hard_blocked("jest --coverage"))
 
     def test_block_cargo_test(self):
-        self.assertTrue(self._is_blocked("cargo test"))
+        self.assertTrue(self._is_hard_blocked("cargo test"))
 
     def test_block_go_test(self):
-        self.assertTrue(self._is_blocked("go test ./..."))
+        self.assertTrue(self._is_hard_blocked("go test ./..."))
 
-    # ── Pipe safety: blocked patterns in pipe segments should NOT block ──
-
-    def test_pipe_grep_not_blocked(self):
-        """grep in a pipe segment should not block the command."""
-        self.assertFalse(self._is_blocked("docker compose build 2>&1 | grep error"))
-
-    def test_pipe_tail_not_blocked(self):
-        """tail in a pipe segment should not block the command."""
-        self.assertFalse(self._is_blocked("docker compose build 2>&1 | tail -20"))
-
-    def test_pipe_head_not_blocked(self):
-        """head in a pipe segment should not block the command."""
-        self.assertFalse(self._is_blocked("npm run build 2>&1 | head -50"))
-
-    def test_pipe_rg_not_blocked(self):
-        """rg in a pipe segment should not block the command."""
-        self.assertFalse(self._is_blocked("docker compose up 2>&1 | rg error"))
-
-    def test_pipe_cat_not_blocked(self):
-        """cat in a pipe segment should not block when primary is safe."""
-        self.assertFalse(self._is_blocked("docker compose build 2>&1 | cat -n"))
-
-    def test_pipe_chain_not_blocked(self):
-        """Multi-pipe chain with head + grep should not block."""
-        self.assertFalse(self._is_blocked("docker compose build 2>&1 | head -50 | grep error"))
-
-    def test_pipe_primary_still_blocked(self):
-        """Primary command should still be blocked even with pipes."""
-        self.assertTrue(self._is_blocked("git log --oneline | head -20"))
-
-    def test_pipe_primary_pytest_still_blocked(self):
+    def test_block_pytest_with_pipe(self):
         """pytest as primary should still be blocked even with pipe."""
-        self.assertTrue(self._is_blocked("pytest -v | grep FAILED"))
+        self.assertTrue(self._is_hard_blocked("pytest -v | grep FAILED"))
 
-    # ── Tier 3: commands that are neither safe nor blocked ──
+    # ── Soft-tipped commands (Tier 3) — allowed with suggestion ──
 
-    def test_tier3_python_script(self):
-        """General python3 commands should be tier 3 (tip, not blocked)."""
+    def test_tip_grep(self):
+        self.assertTrue(self._is_tipped("grep -r 'pattern' src/"))
+
+    def test_tip_rg(self):
+        self.assertTrue(self._is_tipped("rg 'pattern' src/"))
+
+    def test_tip_find(self):
+        self.assertTrue(self._is_tipped("find . -name '*.py'"))
+
+    def test_tip_cat(self):
+        self.assertTrue(self._is_tipped("cat src/main.py"))
+
+    def test_tip_git_log(self):
+        self.assertTrue(self._is_tipped("git log --oneline"))
+
+    def test_tip_git_diff(self):
+        self.assertTrue(self._is_tipped("git diff HEAD~3"))
+
+    def test_tip_git_show(self):
+        self.assertTrue(self._is_tipped("git show HEAD"))
+
+    def test_tip_git_blame(self):
+        self.assertTrue(self._is_tipped("git blame src/main.py"))
+
+    def test_tip_docker_logs(self):
+        self.assertTrue(self._is_tipped("docker logs container_id"))
+
+    def test_tip_docker_ps(self):
+        self.assertTrue(self._is_tipped("docker ps"))
+
+    def test_tip_kubectl_get(self):
+        self.assertTrue(self._is_tipped("kubectl get pods"))
+
+    def test_tip_pip_list(self):
+        self.assertTrue(self._is_tipped("pip list"))
+
+    def test_tip_npm_list(self):
+        self.assertTrue(self._is_tipped("npm list"))
+
+    # ── Tipped commands are NOT hard-blocked ──
+
+    def test_git_log_not_hard_blocked(self):
+        """git log should be tipped, not hard-blocked."""
+        self.assertFalse(self._is_hard_blocked("git log --oneline"))
+
+    def test_grep_not_hard_blocked(self):
+        """grep should be tipped, not hard-blocked."""
+        self.assertFalse(self._is_hard_blocked("grep -r 'pattern' src/"))
+
+    def test_docker_logs_not_hard_blocked(self):
+        """docker logs should be tipped, not hard-blocked."""
+        self.assertFalse(self._is_hard_blocked("docker logs container_id"))
+
+    def test_cat_not_hard_blocked(self):
+        """cat should be tipped, not hard-blocked."""
+        self.assertFalse(self._is_hard_blocked("cat src/main.py"))
+
+    def test_git_diff_not_hard_blocked(self):
+        """git diff should be tipped, not hard-blocked."""
+        self.assertFalse(self._is_hard_blocked("git diff HEAD~3"))
+
+    # ── Pipe safety: tipped patterns in pipe segments should NOT tip ──
+
+    def test_pipe_grep_not_tipped(self):
+        """grep in a pipe segment should not trigger tip."""
+        self.assertFalse(self._is_tipped("docker compose build 2>&1 | grep error"))
+
+    def test_pipe_tail_not_tipped(self):
+        """tail in a pipe segment should not trigger tip."""
+        self.assertFalse(self._is_tipped("docker compose build 2>&1 | tail -20"))
+
+    def test_pipe_cat_not_tipped(self):
+        """cat in a pipe segment should not tip when primary is safe."""
+        self.assertFalse(self._is_tipped("docker compose build 2>&1 | cat -n"))
+
+    def test_pipe_chain_not_tipped(self):
+        """Multi-pipe chain with head + grep should not trigger tip."""
+        self.assertFalse(self._is_tipped("docker compose build 2>&1 | head -50 | grep error"))
+
+    # ── Tier 4: commands that are neither safe, blocked, nor tipped ──
+
+    def test_tier4_python_script(self):
+        """General python3 commands should be tier 4 (gentle reminder)."""
         cmd = "python3 script.py"
         self.assertFalse(self._is_safe(cmd))
-        self.assertFalse(self._is_blocked(cmd))
+        self.assertFalse(self._is_hard_blocked(cmd))
+        self.assertFalse(self._is_tipped(cmd))
 
-    def test_tier3_node_script(self):
+    def test_tier4_node_script(self):
         cmd = "node server.js"
         self.assertFalse(self._is_safe(cmd))
-        self.assertFalse(self._is_blocked(cmd))
+        self.assertFalse(self._is_hard_blocked(cmd))
 
-    def test_tier3_curl(self):
+    def test_tier4_curl(self):
         cmd = "curl https://api.example.com"
         self.assertFalse(self._is_safe(cmd))
-        self.assertFalse(self._is_blocked(cmd))
+        self.assertFalse(self._is_hard_blocked(cmd))
 
     # ── Edge cases: safe should take priority when both match ──
 
@@ -180,24 +196,32 @@ class TestCommandRouting(unittest.TestCase):
         cmd = 'python3 -c "import py_compile; py_compile.compile(\'test.py\')"'
         self.assertTrue(self._is_safe(cmd))
 
-    # ── Redirect messages ──
+    # ── Tip messages contain helpful guidance ──
 
-    def test_redirect_message_grep(self):
-        """Grep commands should get specific Grep tool redirect."""
-        for key, msg in hook_runner._REDIRECT_MSG.items():
-            if 'grep' in key.lower() or key == 'rg ':
-                self.assertIn('Grep', msg)
-                break
+    def test_tip_grep_mentions_grep_tool(self):
+        """Grep tip should mention the Grep tool."""
+        tip = hook_runner._TIP_CMDS.get("grep ", "")
+        self.assertIn("Grep", tip)
 
-    def test_redirect_message_cat(self):
-        """Cat commands should get specific Read tool redirect."""
-        msg = hook_runner._REDIRECT_MSG.get('cat ', '')
-        self.assertIn('Read', msg)
+    def test_tip_cat_mentions_read_tool(self):
+        """Cat tip should mention the Read tool."""
+        tip = hook_runner._TIP_CMDS.get("cat ", "")
+        self.assertIn("Read", tip)
 
-    def test_redirect_message_find(self):
-        """Find commands should get specific Glob tool redirect."""
-        msg = hook_runner._REDIRECT_MSG.get('find ', '')
-        self.assertIn('Glob', msg)
+    def test_tip_find_mentions_glob_tool(self):
+        """Find tip should mention the Glob tool."""
+        tip = hook_runner._TIP_CMDS.get("find ", "")
+        self.assertIn("Glob", tip)
+
+    def test_tip_git_log_mentions_execute(self):
+        """Git log tip should mention execute tool."""
+        tip = hook_runner._TIP_CMDS.get("git log", "")
+        self.assertIn("execute", tip)
+
+    def test_tip_git_diff_mentions_raw(self):
+        """Git diff tip should mention raw mode for debugging."""
+        tip = hook_runner._TIP_CMDS.get("git diff", "")
+        self.assertIn("raw", tip)
 
 
 class TestInferRole(unittest.TestCase):

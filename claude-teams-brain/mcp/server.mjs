@@ -145,14 +145,15 @@ const TOOLS = [
   },
   {
     name: 'execute',
-    description: 'Run code in a sandboxed subprocess. Output stays out of context unless returned. Use intent to auto-filter large output.',
+    description: 'Run code in a sandboxed subprocess. Modes: (1) Default — returns output directly. (2) intent="..." — auto-indexes large output and returns relevant snippets (token-efficient). (3) raw=true — ALWAYS returns full output, never indexes (use for debugging when you need complete output).',
     inputSchema: {
       type: 'object',
       properties: {
-        language: { type: 'string', enum: ['shell', 'javascript', 'python'], description: 'Language to run' },
-        code: { type: 'string', description: 'Code to execute' },
+        language: { type: 'string', enum: ['shell', 'javascript', 'python'], description: 'Language to run (required)' },
+        code: { type: 'string', description: 'Code or shell command to execute (required)' },
         timeout: { type: 'number', default: 30000 },
-        intent: { type: 'string', description: 'If set and output > 5KB, auto-index and search by this intent' }
+        intent: { type: 'string', description: 'If set and output > 5KB, auto-index and search by this intent (token-efficient mode)' },
+        raw: { type: 'boolean', default: false, description: 'If true, return full raw output without indexing (debug mode). Use when you need complete command output for troubleshooting.' }
       },
       required: ['language', 'code']
     }
@@ -222,13 +223,37 @@ async function handleIndex({ content, source }) {
   return text;
 }
 
-async function handleExecute({ language, code, timeout = 30000, intent }) {
+async function handleExecute({ language, code, timeout = 30000, intent, raw = false }) {
+  // Validate required parameters — give helpful error instead of "Runtime not found: undefined"
+  if (!language) {
+    throw new Error(
+      'Missing required parameter "language". Use: execute(language="shell", code="your command here"). ' +
+      'Valid languages: shell, javascript, python.'
+    );
+  }
+  if (!code) {
+    throw new Error(
+      'Missing required parameter "code". Use: execute(language="shell", code="your command here").'
+    );
+  }
+
   const result = await runCode({ language, code, timeout });
   let output = result.stdout || '';
   const rawOutput = output;
 
   if (result.timedOut) output += '\n[TIMED OUT]';
   if (result.exitCode !== 0 && result.stderr) output += `\n[stderr]: ${result.stderr.slice(0, 500)}`;
+
+  // Raw/debug mode: return full output directly, no filtering or indexing
+  if (raw) {
+    const RAW_CAP = 120 * 1024; // 120KB cap for raw mode
+    let text = output.slice(0, RAW_CAP);
+    if (output.length > RAW_CAP) {
+      text += `\n\n[truncated at 120KB — full output was ${(output.length / 1024).toFixed(1)}KB]`;
+    }
+    track('execute', text.length);
+    return text;
+  }
 
   // Apply output filtering for shell commands
   if (language === 'shell' && output) {

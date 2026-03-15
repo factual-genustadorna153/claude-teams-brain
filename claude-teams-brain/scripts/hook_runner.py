@@ -313,14 +313,22 @@ TOOL_GUIDANCE = """\
 
 You have five MCP tools that keep large output OUT of your context window. **You MUST use these instead of Bash** for any command that may produce more than a few lines of output. Bash is only for short, safe commands (git status, mkdir, pip install, etc.). Large-output Bash commands will be **automatically blocked** by PreToolUse hooks.
 
+**Bash is allowed** for commands with output-limiting modifiers:
+- `git log --oneline -10`, `git diff --stat`, `git diff --name-only`
+- `docker ps --format "..."`, `docker ps | grep ...`
+- Any blocked command piped to `grep`, `head`, `tail`, `wc`
+
 **`batch_execute`** — default for shell commands
 - Use for 2+ commands; all output auto-indexed, never floods context
 - Always include `queries` to immediately search indexed output
 - Example: `batch_execute(commands=[{"label":"tests","command":"npm test"},{"label":"log","command":"git log --oneline -20"}], queries=["failing tests","recent changes"])`
 
-**`execute`** — single command or code snippet
-- Set `intent` when output may be large — auto-indexes and searches instead of returning raw output
-- Example: `execute(language="python", code="...", intent="find all class definitions")`
+**`execute`** — single command or code snippet (3 modes)
+- **Default**: returns output directly (for small outputs)
+- **`intent="..."`**: auto-indexes large output, returns relevant snippets (token-efficient)
+- **`raw=true`**: returns FULL raw output, no indexing (use for **debugging** when you need complete output)
+- Example (token-efficient): `execute(language="shell", code="npm test", intent="failing tests")`
+- Example (debug): `execute(language="shell", code="docker logs myapp --tail 200", raw=true)`
 
 **`search`** — query already-indexed output without re-running commands
 - Example: `search(queries=["auth middleware","error handling"])`
@@ -739,40 +747,66 @@ _SAFE_CMDS = [
     "true", "false", "exit",
 ]
 
-# Commands that produce large/unpredictable output — block and redirect to MCP
-_BLOCK_CMDS = [
-    # Test runners
+# ── Command classification ────────────────────────────────────────────────────
+#
+# HARD BLOCK — only for commands that routinely produce megabytes of output
+# and have no business running in raw Bash. These are the only commands that
+# exit 2 (block).  Everything else is allowed with a helpful tip.
+#
+_HARD_BLOCK_CMDS = [
+    # Test runners — can produce megabytes of output
     "npm test", "npm run test", "yarn test", "pnpm test",
     "pytest", "jest ", "vitest", "mocha", "cargo test", "go test",
-    # Search tools (should use Grep/Glob built-in tools or MCP execute)
-    "grep ", "grep\t", "rg ", "ripgrep", "find ", "find\t",
-    "ack ", "ag ",
-    # File reading (should use Read tool or MCP execute)
-    "cat ", "cat\t", "head ", "tail ", "less ", "more ",
-    # Git large-output commands
-    "git log", "git diff", "git show", "git blame",
-    # Infrastructure
-    "docker logs", "docker ps", "kubectl get", "kubectl describe",
-    "kubectl logs", "helm list",
-    # Package listing
-    "pip list", "pip freeze", "npm list", "npm ls", "yarn list",
-    # System info
-    "ps aux", "netstat", "lsof", "df ", "du ",
 ]
 
-# Redirect messages per command category
-_REDIRECT_MSG = {
-    "grep":     "Use the Grep tool or `execute(intent=\"...\")` instead.",
-    "rg ":      "Use the Grep tool or `execute(intent=\"...\")` instead.",
-    "ack ":     "Use the Grep tool or `execute(intent=\"...\")` instead.",
-    "ag ":      "Use the Grep tool or `execute(intent=\"...\")` instead.",
-    "find ":    "Use the Glob tool or `execute(intent=\"...\")` instead.",
-    "cat ":     "Use the Read tool or `execute(intent=\"...\")` instead.",
-    "head ":    "Use the Read tool (with offset/limit) instead.",
-    "tail ":    "Use the Read tool (with offset/limit) instead.",
-    "git log":  "Use `execute(language=\"shell\", code=\"git log ...\", intent=\"...\")` instead.",
-    "git diff": "Use `execute(language=\"shell\", code=\"git diff ...\", intent=\"...\")` instead.",
+# SOFT TIP — commands that CAN produce large output. We allow them but inject
+# a gentle suggestion to use MCP tools for token efficiency.  Never blocks.
+_TIP_CMDS = {
+    # Search tools → suggest built-in Grep/Glob
+    "grep ":       "TIP: Prefer the Grep tool for searches — results are structured and don't flood context.",
+    "grep\t":      "TIP: Prefer the Grep tool for searches.",
+    "rg ":         "TIP: Prefer the Grep tool for searches.",
+    "find ":       "TIP: Prefer the Glob tool for file searches.",
+    "find\t":      "TIP: Prefer the Glob tool for file searches.",
+    "ack ":        "TIP: Prefer the Grep tool for searches.",
+    "ag ":         "TIP: Prefer the Grep tool for searches.",
+    # File reading → suggest Read tool
+    "cat ":        "TIP: Prefer the Read tool for file reading — supports offset/limit for large files.",
+    "cat\t":       "TIP: Prefer the Read tool for file reading.",
+    "less ":       "TIP: Use the Read tool instead — less requires interactive input.",
+    "more ":       "TIP: Use the Read tool instead — more requires interactive input.",
+    # Git large-output → suggest execute for token efficiency
+    "git log":     "TIP: For large git output, use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency, or `execute(..., raw=true)` for full debug output.",
+    "git diff":    "TIP: For large diffs, use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency, or `execute(..., raw=true)` for full debug output.",
+    "git show":    "TIP: For large output, use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency, or `execute(..., raw=true)` for full debug output.",
+    "git blame":   "TIP: For large output, use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    # Infrastructure
+    "docker logs":  "TIP: For large log output, use `execute(language=\"shell\", code=\"...\", intent=\"...\")` or `execute(..., raw=true)` for full debug output.",
+    "docker ps":    "TIP: For token efficiency, use `execute(language=\"shell\", code=\"...\", intent=\"...\")` or add `--format` to limit output.",
+    "kubectl get":  "TIP: For large output, use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    "kubectl describe": "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` — describe output can be very large.",
+    "kubectl logs": "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    "helm list":    "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    # Package listing
+    "pip list":     "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    "pip freeze":   "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    "npm list":     "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    "npm ls":       "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    "yarn list":    "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    # System info
+    "ps aux":       "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    "netstat":      "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    "lsof":         "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    "df ":          "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
+    "du ":          "TIP: Use `execute(language=\"shell\", code=\"...\", intent=\"...\")` for token efficiency.",
 }
+
+# Redirect messages for hard-blocked commands
+_HARD_BLOCK_MSG = (
+    "Use `batch_execute(commands=[...], queries=[...])` or "
+    "`execute(language=\"shell\", code=\"...\", intent=\"...\")` to auto-index output. "
+    "For full raw output: `execute(language=\"shell\", code=\"...\", raw=true)`."
+)
 
 
 def _emit_block(reason):
@@ -790,40 +824,35 @@ def hook_pretooluse_bash(data):
 
     cmd_lower = command.lower()
 
-    # Tier 1: Safe commands — allow silently
+    # Tier 1: Safe commands — allow silently (no tip, no block)
     if any(cmd_lower.startswith(safe) or safe in cmd_lower for safe in _SAFE_CMDS):
         return
 
-    # Extract primary command (before first pipe) for blocking decisions.
-    # Pipe segments like `| grep`, `| tail`, `| head` are output-limiting
-    # and should NOT trigger blocks — only the primary command matters.
+    # Extract primary command (before first pipe) for classification.
     primary = cmd_lower.split("|")[0].strip() if "|" in cmd_lower else cmd_lower
 
-    # Tier 2: Large-output commands — block and redirect to MCP
-    for pattern in _BLOCK_CMDS:
+    # Tier 2: Hard block — ONLY test runners (megabyte output).
+    # These are the only commands that actually exit 2.
+    for pattern in _HARD_BLOCK_CMDS:
         if pattern in primary:
-            # Find specific redirect message, or use generic
-            redirect = None
-            for key, msg in _REDIRECT_MSG.items():
-                if key in primary:
-                    redirect = msg
-                    break
-            if not redirect:
-                redirect = (
-                    "Use `batch_execute` (2+ commands) or "
-                    "`execute(language=\"shell\", code=\"...\", intent=\"...\")` (1 command)."
-                )
             _emit_block(
-                f"⛔ BLOCKED: This command may produce large output that floods context. "
-                f"{redirect} "
-                f"Output is auto-indexed and only relevant snippets enter your context window."
+                f"⛔ BLOCKED: Test runners produce very large output that floods context. "
+                f"{_HARD_BLOCK_MSG}"
             )
             return  # _emit_block exits, but just in case
 
-    # Tier 3: Unknown commands — allow with reminder
+    # Tier 3: Soft tip — commands that CAN produce large output.
+    # We ALLOW them but inject a helpful suggestion about MCP tools.
+    for pattern, tip in _TIP_CMDS.items():
+        if pattern in primary:
+            emit_context("PreToolUse", tip)
+            return
+
+    # Tier 4: Unknown commands — allow with gentle reminder
     emit_context("PreToolUse", (
-        "REMINDER: Prefer brain MCP tools over Bash for commands with unpredictable output size. "
-        "Use `execute(intent=\"...\")` for auto-indexing, or `batch_execute` for multiple commands."
+        "TIP: For commands with large output, use `execute(language=\"shell\", code=\"...\", intent=\"...\")` "
+        "for auto-indexing, `execute(..., raw=true)` for full debug output, "
+        "or `batch_execute` for multiple commands."
     ))
 
 
